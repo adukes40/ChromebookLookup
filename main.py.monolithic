@@ -1,0 +1,1390 @@
+"""
+Chromebook Dashboard - Main Application
+Combines IncidentIQ asset data with Google Workspace device information
+"""
+
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
+from authlib.integrations.starlette_client import OAuth
+import redis
+import json
+import os
+from datetime import datetime
+from typing import Optional, Dict, List
+import logging
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv('/opt/chromebook-dashboard/.env')
+
+# Database imports
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import QueuePool
+
+# Database Configuration
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '5432')
+DB_NAME = os.getenv('DB_NAME', 'chromebook_dashboard')
+DB_USER = os.getenv('DB_USER', 'chromebook_user')
+DB_PASSWORD = os.getenv('DB_PASSWORD', '')
+
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+# Create database engine
+engine = create_engine(
+    DATABASE_URL,
+    poolclass=QueuePool,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True
+)
+
+# Create session maker
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    """Get database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# OAuth Configuration
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
+SECRET_KEY = os.getenv('SECRET_KEY')
+ALLOWED_DOMAIN = os.getenv('ALLOWED_DOMAIN', 'cr.k12.de.us')
+ALLOWED_GROUP = os.getenv('ALLOWED_GROUP', '') # Google Group email
+REDIRECT_URI = os.getenv('REDIRECT_URI')
+
+# Google API imports
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# IncidentIQ integration
+from integrations.incidentiq import IncidentIQClient
+
+# Meraki integration
+from integrations.meraki import MerakiClient
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI
+app = FastAPI(title="Chromebook Dashboard", version="1.0.0")
+
+# Session middleware for authentication
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+
+# OAuth setup
+oauth = OAuth()
+oauth.register(
+    name='google',
+    client_id=GOOGLE_CLIENT_ID,
+    client_secret=GOOGLE_CLIENT_SECRET,
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'}
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Authentication dependency
+async def get_current_user(request: Request):
+    user = request.session.get('user')
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+# Redis connection
+redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+
+# Configuration from environment
+SERVICE_ACCOUNT_FILE = os.getenv('GOOGLE_SERVICE_ACCOUNT_FILE', '/opt/chromebook-dashboard/credentials.json')
+DELEGATED_ADMIN_EMAIL = os.getenv('GOOGLE_ADMIN_EMAIL', '')
+CACHE_TTL = int(os.getenv('CACHE_TTL', '300'))
+
+# IncidentIQ Configuration
+INCIDENTIQ_SITE_ID = os.getenv('INCIDENTIQ_SITE_ID', '')
+INCIDENTIQ_API_TOKEN = os.getenv('INCIDENTIQ_API_TOKEN', '')
+INCIDENTIQ_PRODUCT_ID = os.getenv('INCIDENTIQ_PRODUCT_ID', '88df910c-91aa-e711-80c2-0004ffa00050')
+
+# Meraki Configuration
+MERAKI_API_KEY = os.getenv('MERAKI_API_KEY', '')
+MERAKI_ORG_ID = os.getenv('MERAKI_ORG_ID', '')
+
+# Google API scopes
+SCOPES = [
+    'https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly',
+    'https://www.googleapis.com/auth/admin.directory.user.readonly',
+    'https://www.googleapis.com/auth/admin.directory.orgunit.readonly',
+    'https://www.googleapis.com/auth/admin.directory.group.member.readonly'
+]
+
+def get_google_service():
+    """Create Google Admin SDK service"""
+    try:
+        if not os.path.exists(SERVICE_ACCOUNT_FILE):
+            raise HTTPException(status_code=500, detail="Service account file not found")
+        
+        credentials = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE,
+            scopes=SCOPES
+        )
+        
+        if DELEGATED_ADMIN_EMAIL:
+            credentials = credentials.with_subject(DELEGATED_ADMIN_EMAIL)
+        
+        return build('admin', 'directory_v1', credentials=credentials)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create Google service: {str(e)}")
+
+def format_mac_address(mac: str) -> str:
+    """Format MAC address to XX:XX:XX:XX:XX:XX"""
+    if not mac or mac == 'N/A':
+        return 'N/A'
+    
+    clean_mac = mac.replace(':', '').replace('-', '').replace('.', '').upper()
+    
+    if len(clean_mac) == 12:
+        return ':'.join(clean_mac[i:i+2] for i in range(0, 12, 2))
+    
+    return mac
+
+def get_google_device_by_serial(service, serial_number: str) -> Optional[Dict]:
+    """Get Google device by serial number using query"""
+    try:
+        results = service.chromeosdevices().list(
+            customerId='my_customer',
+            query=f'id:{serial_number}',
+            projection='FULL',
+            maxResults=1
+        ).execute()
+        
+        devices = results.get('chromeosdevices', [])
+        if devices:
+            return devices[0]
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error fetching Google device {serial_number}: {e}")
+        return None
+
+
+def get_google_user(service, email: str) -> Optional[Dict]:
+    """Get Google user info"""
+    try:
+        user = service.users().get(userKey=email, projection='full').execute()
+        return user
+    except Exception as e:
+        logger.error(f"Error fetching Google user {email}: {e}")
+        return None
+
+def get_user_chromebook_history(service, email: str, iiq_client) -> List[Dict]:
+    """Get Chromebooks this user has logged into with asset tags from IIQ"""
+    try:
+        # Search for devices where this user appears in recentUsers
+        results = service.chromeosdevices().list(
+            customerId='my_customer',
+            projection='FULL',
+            maxResults=100
+        ).execute()
+        
+        devices = results.get('chromeosdevices', [])
+        user_devices = []
+        
+        for device in devices:
+            recent_users = device.get('recentUsers', [])
+            for recent_user in recent_users:
+                if recent_user.get('email', '').lower() == email.lower():
+                    serial = device.get('serialNumber', 'N/A')
+                    
+                    # Try to get asset tag from IIQ
+                    asset_tag = 'N/A'
+                    asset_id = ''
+                    if serial != 'N/A':
+                        iiq_results = iiq_client.search_and_extract(serial, limit=1)
+                        if iiq_results:
+                            asset_tag = iiq_results[0].get('assetTag', 'N/A')
+                            asset_id = iiq_results[0].get('assetId', '')
+                    
+                    user_devices.append({
+                        'assetTag': asset_tag,
+                        'assetId': asset_id,
+                        'serialNumber': serial,
+                        'model': device.get('model', 'N/A'),
+                        'lastSync': device.get('lastSync', 'N/A'),
+                        'orgUnitPath': device.get('orgUnitPath', 'N/A')
+                    })
+                    break
+        
+        # Sort by most recent and limit to 10
+        return user_devices[:10]
+        
+    except Exception as e:
+        logger.error(f"Error fetching user device history: {e}")
+        return []
+
+
+@app.get("/login")
+async def login(request: Request):
+    """Redirect to Google login"""
+    redirect_uri = REDIRECT_URI
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    """Handle Google OAuth callback"""
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        user_info = token.get('userinfo')
+        
+        # Check domain
+        email = user_info.get('email', '')
+        if not email.endswith(f'@{ALLOWED_DOMAIN}'):
+            raise HTTPException(status_code=403, detail=f"Only {ALLOWED_DOMAIN} emails allowed")
+        
+        # Check group membership if specified
+        if ALLOWED_GROUP:
+            try:
+                google_service = get_google_service()
+                
+                # Check if user is in the allowed group (including nested groups)
+                try:
+                    # hasMember checks both direct and nested membership
+                    result = google_service.members().hasMember(
+                        groupKey=ALLOWED_GROUP,
+                        memberKey=email
+                    ).execute()
+                    
+                    if result.get('isMember'):
+                        logger.info(f"User {email} is member of {ALLOWED_GROUP} (direct or nested)")
+                    else:
+                        logger.warning(f"User {email} not in group {ALLOWED_GROUP}")
+                        raise HTTPException(
+                            status_code=403, 
+                            detail=f"Access denied. You must be a member of {ALLOWED_GROUP}"
+                        )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logger.error(f"Error checking group membership for {email}: {e}")
+                    raise HTTPException(
+                        status_code=403, 
+                        detail=f"Access denied. Could not verify group membership."
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking group membership: {e}")
+                raise HTTPException(status_code=500, detail="Authentication error")
+        
+        # Store user in session
+        request.session['user'] = {
+            'email': email,
+            'name': user_info.get('name'),
+            'picture': user_info.get('picture')
+        }
+        
+        return RedirectResponse(url='/')
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=400, detail="Authentication failed")
+
+@app.get("/logout")
+async def logout(request: Request):
+    """Logout user"""
+    request.session.clear()
+    return RedirectResponse(url='/login')
+
+@app.get("/api/health")
+async def health_check(user: dict = Depends(get_current_user), ):
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "redis": redis_client.ping(),
+        "google_configured": os.path.exists(SERVICE_ACCOUNT_FILE),
+        "incidentiq_configured": bool(INCIDENTIQ_SITE_ID and INCIDENTIQ_API_TOKEN)
+    }
+
+@app.get("/api/dashboard/stats")
+async def dashboard_stats(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get dashboard analytics from database - instant results"""
+    try:
+        # Query database for stats (much faster than API calls)
+        query = text("""
+            SELECT
+                COUNT(*) as total_devices,
+                COUNT(CASE WHEN status = 'ACTIVE' THEN 1 END) as active,
+                COUNT(CASE WHEN status = 'DISABLED' THEN 1 END) as disabled,
+                COUNT(CASE WHEN status = 'PROVISIONED' THEN 1 END) as provisioned,
+                COUNT(CASE WHEN status = 'DEPROVISIONED' THEN 1 END) as deprovisioned,
+                MAX(updated_at) as last_sync
+            FROM chromebooks
+        """)
+
+        result = db.execute(query).fetchone()
+
+        stats = {
+            "total_devices": result[0],
+            "active": result[1],
+            "disabled": result[2],
+            "provisioned": result[3],
+            "deprovisioned": result[4],
+            "last_sync": result[5].isoformat() if result[5] else None,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        return stats
+
+    except Exception as e:
+        logger.error(f"Dashboard stats error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch stats: {str(e)}")
+
+@app.get("/api/combined/search")
+async def combined_search(user: dict = Depends(get_current_user), query: str = "", db: Session = Depends(get_db)):
+    """Fast database search - instant results from cached data"""
+    try:
+        if not query:
+            return {"devices": [], "count": 0, "source": "database"}
+
+        # Search database - much faster than API calls
+        # Search by serial number, asset tag, or user
+        search_query = text("""
+            SELECT
+                device_id,
+                serial_number,
+                asset_tag,
+                model,
+                status,
+                annotated_user,
+                annotated_location as location,
+                org_unit_path,
+                recent_users,
+                iiq_asset_id,
+                iiq_location,
+                mac_address,
+                ip_address,
+                os_version,
+                last_used_date as last_sync,
+                meraki_ap_name,
+                meraki_network,
+                last_seen_meraki
+            FROM chromebooks
+            WHERE
+                LOWER(serial_number) LIKE LOWER(:query) OR
+                LOWER(asset_tag) LIKE LOWER(:query) OR
+                LOWER(annotated_user) LIKE LOWER(:query)
+            LIMIT 50
+        """)
+
+        results = db.execute(search_query, {"query": f"%{query}%"}).fetchall()
+
+        devices = []
+        for row in results:
+            # Parse recent_users JSON
+            recent_users_json = row[8] if row[8] else []
+            if isinstance(recent_users_json, str):
+                import json as json_lib
+                recent_users_json = json_lib.loads(recent_users_json)
+
+            recent_user_emails = [u.get('email', '') for u in recent_users_json[:5]] if recent_users_json else []
+            last_known_user = recent_user_emails[0] if recent_user_emails else row[5] or 'N/A'
+
+            devices.append({
+                'deviceId': row[0] or '',
+                'serialNumber': row[1] or 'N/A',
+                'assetTag': row[2] or 'N/A',
+                'model': row[3] or 'N/A',
+                'googleStatus': row[4] or 'N/A',
+                'assignedUser': row[5] or 'Not assigned',
+                'location': row[6] or row[10] or 'N/A',  # annotated_location or iiq_location
+                'orgUnitPath': row[7] or 'N/A',
+                'recentUsers': recent_user_emails,
+                'assetId': row[9] or '',
+                'macAddress': format_mac_address(row[11]) if row[11] else 'N/A',
+                'ipAddress': row[12] or 'N/A',
+                'osVersion': row[13] or 'N/A',
+                'lastSync': row[14].isoformat() if row[14] else 'N/A',
+                'lastKnownUser': last_known_user,
+                'deviceType': 'Chromebooks',
+                'merakiApName': row[15],
+                'merakiNetwork': row[16],
+                'merakiLastSeen': row[17].isoformat() if row[17] else None,
+                'source': 'database'
+            })
+
+        return {"devices": devices, "count": len(devices), "source": "database"}
+
+    except Exception as e:
+        logger.error(f"Database search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+@app.get("/api/user/search")
+async def user_search(user: dict = Depends(get_current_user), query: str = "", db: Session = Depends(get_db)):
+    """Fast user search from database"""
+    try:
+        if not query:
+            return {"users": [], "count": 0}
+
+        # Search users table in database
+        search_query = text("""
+            SELECT
+                user_id,
+                email,
+                full_name,
+                org_unit_path,
+                is_suspended,
+                assigned_devices,
+                device_count
+            FROM users
+            WHERE
+                LOWER(email) LIKE LOWER(:query) OR
+                LOWER(full_name) LIKE LOWER(:query) OR
+                LOWER(first_name) LIKE LOWER(:query) OR
+                LOWER(last_name) LIKE LOWER(:query)
+            LIMIT 20
+        """)
+
+        results = db.execute(search_query, {"query": f"%{query}%"}).fetchall()
+
+        # Also get devices assigned to the user from chromebooks table
+        users_list = []
+        for row in results:
+            email = row[1]
+
+            # Get assigned devices from chromebooks table
+            devices_query = text("""
+                SELECT
+                    asset_tag,
+                    serial_number,
+                    model,
+                    status,
+                    iiq_location
+                FROM chromebooks
+                WHERE LOWER(annotated_user) = LOWER(:email)
+                LIMIT 10
+            """)
+
+            user_devices = db.execute(devices_query, {"email": email}).fetchall()
+
+            assigned_devices = []
+            recent_devices = []
+            for dev in user_devices:
+                device_info = {
+                    'assetTag': dev[0] or 'N/A',
+                    'serialNumber': dev[1] or 'N/A',
+                    'model': dev[2] or 'N/A',
+                    'deviceType': 'Chromebooks',
+                    'location': dev[4] or 'N/A'
+                }
+                assigned_devices.append(device_info)
+                recent_devices.append(device_info)
+
+            users_list.append({
+                'userId': row[0],
+                'email': email,
+                'fullName': row[2] or 'N/A',
+                'isActive': not row[4] if row[4] is not None else True,
+                'googleOrgUnit': row[3] or 'N/A',
+                'location': 'N/A',  # Would need to be added to users table
+                'grade': 'N/A',  # Would need to be added to users table
+                'assignedDevices': assigned_devices,
+                'assignedCount': len(assigned_devices),
+                'recentDevices': recent_devices,
+                'deviceCount': len(recent_devices),
+                'source': 'database'
+            })
+
+        return {
+            "users": users_list,
+            "count": len(users_list)
+        }
+
+    except Exception as e:
+        logger.error(f"User search error: {e}")
+        raise HTTPException(status_code=500, detail=f"User search failed: {str(e)}")
+
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request, user: dict = Depends(get_current_user)):
+
+    """Dashboard UI"""
+    
+    # Define the Reports HTML content
+    reports_embed_html = f"""
+    <div id="reportsTab" class="tab-content">
+        <div style="margin-bottom: 20px;">
+            <h2 style="color: #00A3FF;">📊 Chromebook Analytics</h2>
+            <p style="color: #999;">Dashboard updates daily at 2 AM with device data from Google Workspace</p>
+        </div>
+        
+        <iframe 
+            width="100%" 
+            height="1200" 
+            src="https://lookerstudio.google.com/embed/reporting/ccaee7cd-a2ef-48bf-9d50-fc8d858d2f98/page/4j1iF" 
+            frameborder="0" 
+            style="border:0" 
+            allowfullscreen>
+        </iframe>
+    </div>
+    """
+    
+    # Base template with DARK THEME CSS
+    dashboard_template = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Chromebook Dashboard</title>
+<style>
+/* Dark Theme Variables */
+:root {
+    --bg-dark: #0d1117; /* Very dark background */
+    --bg-card: #161b22; /* Slightly lighter card background */
+    --text-primary: #e6edf3;
+    --text-secondary: #7d8590;
+    --accent-color: #58a6ff; /* Softer Blue Accent */
+    --shadow-color: rgba(0, 0, 0, 0.6);
+    --border-color: #30363d;
+    --success-color: #4caf50;
+    --warning-color: #ff9800;
+    --error-color: #f44336;
+    --gradient-primary: linear-gradient(135deg, #1a1f35 0%, #0d1117 100%);
+    --gradient-accent: linear-gradient(135deg, #00A3FF 0%, #0077cc 100%);
+    --card-hover-shadow: 0 8px 24px rgba(0, 163, 255, 0.15);
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+    font-family:-apple-system,sans-serif;
+    background: var(--bg-dark); /* Solid dark background */
+    min-height:100vh;
+    padding:30px;
+    color: var(--text-primary);
+}
+.container{max-width:1400px;margin:0 auto}
+.header{
+    background: var(--bg-card);
+    padding:30px;
+    border-radius:10px 10px 0 0;
+    box-shadow:0 6px 12px var(--shadow-color);
+    border-bottom: 1px solid var(--border-color);
+}
+h1{color:var(--text-primary);font-size:2.5em;margin-bottom:10px}
+.subtitle{color:var(--text-secondary);font-size:1.1em}
+.tabs{background:var(--bg-card);display:flex;border-bottom:2px solid var(--border-color)}
+.tab{
+    padding:15px 30px;
+    cursor:pointer;
+    border:none;
+    background:none;
+    font-size:1.1em;
+    color:var(--text-secondary);
+    border-bottom:3px solid transparent;
+    transition: all 0.2s ease;
+}
+.tab:hover{background:rgba(255, 255, 255, 0.05);}
+.tab.active{
+    color:var(--accent-color);
+    border-bottom:3px solid var(--accent-color);
+    font-weight: bold;
+}
+.tab-content{
+    display:none;
+    background:var(--bg-card);
+    padding:30px;
+    border-radius:0 0 10px 10px;
+    box-shadow:0 6px 12px var(--shadow-color);
+    min-height:500px;
+}
+.tab-content.active{display:block}
+.search-container{display:flex;gap:10px;margin-bottom:20px}
+.search-input{
+    flex:1;
+    padding:15px 20px;
+    font-size:1.1em;
+    border:1px solid var(--border-color);
+    border-radius:8px;
+    background: var(--bg-dark);
+    color: var(--text-primary);
+}
+.search-input:focus{outline:none;border-color:var(--accent-color)}
+.search-button{
+    padding:15px 40px;
+    background:var(--accent-color);
+    color:var(--bg-card); /* Dark text on bright button */
+    border:none;
+    border-radius:8px;
+    font-size:1.1em;
+    cursor:pointer;
+    font-weight: bold;
+    transition: background 0.2s;
+}
+.search-button:hover {
+    background: #0084cc;
+}
+.clear-button{
+    padding:15px 25px;
+    background: var(--border-color);
+    color: var(--text-primary);
+    border: 1px solid var(--accent-color);
+    border-radius:8px;
+    font-size:1.1em;
+    cursor:pointer;
+    transition: all 0.2s;
+}
+.clear-button:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--text-primary);
+}
+.device-card{
+    background:var(--bg-dark);
+    padding:20px;
+    border-radius:8px;
+    margin-bottom:15px;
+    border-left:4px solid var(--accent-color);
+    box-shadow:0 2px 4px rgba(0,0,0,0.2);
+}
+.device-header{display:flex;justify-content:space-between;margin-bottom:15px}
+.device-serial{font-size:1.3em;font-weight:bold;color:var(--text-primary)}
+.device-badge{padding:6px 12px;border-radius:15px;font-size:0.85em;font-weight:bold}
+.badge-active{background:#4caf50;color:var(--bg-dark)}
+.badge-disabled{background:#f44336;color:white}
+.device-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px}
+.field-label{font-size:0.8em;color:var(--text-secondary);font-weight:bold;margin-bottom:3px}
+.field-value{color:var(--text-primary);font-family:monospace}
+.user-chip{display:inline-block;background:var(--border-color);padding:4px 8px;border-radius:4px;font-size:0.85em;margin:4px;color:var(--text-primary);}
+.no-results{text-align:center;padding:40px;color:var(--text-secondary)}
+a { color: var(--accent-color); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Hero Section */
+.hero-section {
+    background: var(--gradient-primary);
+    padding: 40px 30px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px var(--shadow-color);
+    border: 1px solid var(--border-color);
+    position: relative;
+    overflow: hidden;
+    transition: var(--transition-smooth);
+}
+.hero-section.collapsed {
+    padding: 15px 30px;
+}
+.hero-section.collapsed .hero-content,
+.hero-section.collapsed .quick-actions {
+    display: none;
+}
+.hero-content {
+    margin-bottom: 30px;
+}
+.hero-text {
+    text-align: center;
+    margin-bottom: 30px;
+}
+.hero-title {
+    font-size: 2.5em;
+    font-weight: 700;
+    color: white;
+    margin-bottom: 10px;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.3);
+}
+.hero-subtitle {
+    font-size: 1.2em;
+    color: rgba(255, 255, 255, 0.9);
+    font-weight: 300;
+}
+.quick-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 20px;
+    margin-top: 30px;
+}
+.stat-card {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
+    padding: 20px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    transition: var(--transition-smooth);
+    cursor: pointer;
+}
+.stat-card:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--accent-color);
+    transform: translateY(-2px);
+}
+.stat-icon {
+    font-size: 2.5em;
+    line-height: 1;
+}
+.stat-content {
+    flex: 1;
+}
+.stat-value {
+    font-size: 1.8em;
+    font-weight: bold;
+    color: white;
+    line-height: 1.2;
+}
+.stat-label {
+    font-size: 0.9em;
+    color: rgba(255, 255, 255, 0.8);
+    margin-top: 4px;
+}
+.quick-actions {
+    margin-top: 30px;
+}
+.quick-actions-title {
+    color: white;
+    font-size: 1.5em;
+    margin-bottom: 20px;
+    text-align: center;
+}
+.action-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 15px;
+}
+.action-card {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
+    padding: 20px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    cursor: pointer;
+    transition: var(--transition-smooth);
+    text-align: left;
+}
+.action-card:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--accent-color);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(88, 166, 255, 0.2);
+}
+.action-icon {
+    font-size: 2.5em;
+    line-height: 1;
+}
+.action-text {
+    flex: 1;
+}
+.action-title {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: white;
+    margin-bottom: 4px;
+}
+.action-desc {
+    font-size: 0.85em;
+    color: rgba(255, 255, 255, 0.8);
+}
+.hero-toggle {
+    position: absolute;
+    bottom: 10px;
+    right: 20px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 8px 16px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: var(--transition-smooth);
+}
+.hero-toggle:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: var(--accent-color);
+}
+.recent-searches-panel {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--border-color);
+    padding: 20px;
+    border-radius: 8px;
+    margin-top: 20px;
+}
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+.panel-header h3 {
+    color: white;
+    font-size: 1.2em;
+}
+.panel-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 1.5em;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    line-height: 1;
+}
+.recent-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.recent-item {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    padding: 12px 16px;
+    border-radius: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: var(--transition-smooth);
+}
+.recent-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--accent-color);
+}
+.recent-item-text {
+    color: white;
+    font-family: monospace;
+}
+.recent-item-type {
+    font-size: 0.85em;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+/* Enhanced Tabs */
+.tabs-container {
+    background: var(--bg-card);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid var(--border-color);
+    padding-right: 15px;
+}
+.tab-icon {
+    font-size: 1.2em;
+}
+.tab-label {
+    font-weight: 500;
+}
+.tab-count {
+    background: var(--accent-color);
+    color: var(--bg-dark);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75em;
+    font-weight: bold;
+    min-width: 20px;
+    text-align: center;
+    display: none;
+}
+.tabs-actions {
+    display: flex;
+    gap: 10px;
+}
+.icon-button {
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 1.2em;
+    transition: var(--transition-smooth);
+}
+.icon-button:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+/* Loading States */
+.loading-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: var(--accent-color);
+    animation: spinner 0.8s linear infinite;
+}
+@keyframes spinner {
+    to { transform: rotate(360deg); }
+}
+
+/* Enhanced Search Input */
+.search-input {
+    transition: var(--transition-smooth);
+}
+.search-input:focus {
+    transform: scale(1.01);
+    box-shadow: 0 4px 12px rgba(0, 163, 255, 0.2);
+}
+
+/* Improved Device Cards */
+.device-card {
+    transition: var(--transition-smooth);
+}
+.device-card:hover {
+    transform: translateX(5px);
+    box-shadow: 0 4px 12px rgba(0, 163, 255, 0.15);
+}
+
+/* Toast Notifications */
+.toast {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    padding: 15px 25px;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px var(--shadow-color);
+    border-left: 4px solid var(--accent-color);
+    z-index: 1000;
+    animation: slideIn 0.3s ease;
+}
+.toast.success { border-left-color: var(--success-color); }
+.toast.error { border-left-color: var(--error-color); }
+.toast.warning { border-left-color: var(--warning-color); }
+@keyframes slideIn {
+    from {
+        transform: translateX(400px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+</style></head><body>
+<div class="container">
+
+<div id="heroSection" class="hero-section">
+  <div class="hero-content">
+    <div class="hero-text">
+      <h2 class="hero-title">Welcome to The Rider Tech View</h2>
+      <p class="hero-subtitle">Unified device management across IncidentIQ, Google Workspace, and Meraki</p>
+    </div>
+    <div class="quick-stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon">💻</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statTotalDevices">—</div>
+          <div class="stat-label">Total Devices</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statActiveDevices">—</div>
+          <div class="stat-label">Active Devices</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">❌</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statDisabledDevices">—</div>
+          <div class="stat-label">Disabled</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statDeprovisionedDevices">—</div>
+          <div class="stat-label">Deprovisioned</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="quick-actions">
+    <h3 class="quick-actions-title">Quick Actions</h3>
+    <div class="action-grid">
+      <button class="action-card" onclick="quickAction('device')">
+        <div class="action-icon">🔍</div>
+        <div class="action-text">
+          <div class="action-title">Device Search</div>
+          <div class="action-desc">Find by serial or asset tag</div>
+        </div>
+      </button>
+      <button class="action-card" onclick="quickAction('user')">
+        <div class="action-icon">👤</div>
+        <div class="action-text">
+          <div class="action-title">User Search</div>
+          <div class="action-desc">Find user assignments</div>
+        </div>
+      </button>
+      <button class="action-card" onclick="quickAction('reports')">
+        <div class="action-icon">📊</div>
+        <div class="action-text">
+          <div class="action-title">Analytics</div>
+          <div class="action-desc">View dashboard reports</div>
+        </div>
+      </button>
+      <button class="action-card" onclick="quickAction('recent')">
+        <div class="action-icon">🕐</div>
+        <div class="action-text">
+          <div class="action-title">Recent Searches</div>
+          <div class="action-desc">View search history</div>
+        </div>
+      </button>
+    </div>
+  </div>
+
+  <div class="recent-searches-panel" id="recentSearchesPanel" style="display:none;">
+    <div class="panel-header">
+      <h3>Recent Searches</h3>
+      <button class="panel-close" onclick="closeRecentSearches()">✕</button>
+    </div>
+    <div id="recentSearchesList" class="recent-list"></div>
+  </div>
+
+  <button class="hero-toggle" id="heroToggle" onclick="toggleHero()">
+    <span id="heroToggleIcon">▲</span> Collapse
+  </button>
+</div>
+
+<div class="tabs-container">
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('search')" data-tab="search">
+      <span class="tab-icon">🔍</span>
+      <span class="tab-label">Device Search</span>
+      <span class="tab-count" id="deviceCount"></span>
+    </button>
+    <button class="tab" onclick="switchTab('users')" data-tab="users">
+      <span class="tab-icon">👤</span>
+      <span class="tab-label">User Search</span>
+      <span class="tab-count" id="userCount"></span>
+    </button>
+    <button class="tab" onclick="switchTab('reports')" data-tab="reports">
+      <span class="tab-icon">📊</span>
+      <span class="tab-label">Reports</span>
+    </button>
+  </div>
+  <div class="tabs-actions">
+    <button class="icon-button" onclick="refreshStats()" title="Refresh Device Statistics">
+      <span id="refreshIcon">🔄</span>
+    </button>
+    <button class="icon-button" onclick="window.location.href='/logout'" title="Logout">
+      <span>🚪</span>
+    </button>
+  </div>
+</div>
+<div id="searchTab" class="tab-content active">
+<div class="search-container">
+<input type="text" id="searchInput" class="search-input" placeholder="Search by serial or asset tag" onkeypress="if(event.key==='Enter')searchDevices()">
+<button class="search-button" onclick="searchDevices()">Search</button>
+<button class="clear-button" onclick="clearSearch()">Clear</button>
+</div>
+<div id="searchInfo"></div>
+<div id="resultsContainer"><div class="no-results">Enter search term</div></div>
+</div>
+<div id="usersTab" class="tab-content">
+<div class="search-container">
+<input type="text" id="userSearchInput" class="search-input" placeholder="Search by name, email, or ID..." onkeypress="if(event.key==='Enter')searchUsers()">
+<button class="search-button" onclick="searchUsers()">Search</button>
+<button class="clear-button" onclick="clearUserSearch()">Clear</button>
+</div>
+<div id="userSearchInfo"></div>
+<div id="userResultsContainer"><div class="no-results">Enter user name or email</div></div>
+</div>
+[[REPORTS_EMBED]]
+</div>
+<script>
+// State Management
+const AppState = {
+    searchHistory: JSON.parse(localStorage.getItem('searchHistory') || '[]'),
+    userSearchHistory: JSON.parse(localStorage.getItem('userSearchHistory') || '[]'),
+    heroCollapsed: localStorage.getItem('heroCollapsed') === 'true'
+};
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    initializeDashboard();
+});
+
+function initializeDashboard() {
+    if (AppState.heroCollapsed) {
+        document.getElementById('heroSection').classList.add('collapsed');
+        document.getElementById('heroToggle').innerHTML = '<span id="heroToggleIcon">▼</span> Expand';
+    }
+    fetchDashboardStats();
+}
+
+async function fetchDashboardStats() {
+    try {
+        const res = await fetch('/api/dashboard/stats');
+        const data = await res.json();
+        if (res.ok) {
+            document.getElementById('statTotalDevices').textContent = data.total_devices.toLocaleString();
+            document.getElementById('statActiveDevices').textContent = data.active.toLocaleString();
+            document.getElementById('statDisabledDevices').textContent = data.disabled.toLocaleString();
+            document.getElementById('statDeprovisionedDevices').textContent = data.deprovisioned.toLocaleString();
+        } else {
+            document.getElementById('statTotalDevices').textContent = 'Error';
+            document.getElementById('statActiveDevices').textContent = '—';
+            document.getElementById('statDisabledDevices').textContent = '—';
+            document.getElementById('statDeprovisionedDevices').textContent = '—';
+        }
+    } catch (e) {
+        console.error('Failed to fetch dashboard stats:', e);
+        document.getElementById('statTotalDevices').textContent = 'Error';
+    }
+}
+
+function toggleHero() {
+    const hero = document.getElementById('heroSection');
+    const toggle = document.getElementById('heroToggle');
+    const isCollapsed = hero.classList.toggle('collapsed');
+    AppState.heroCollapsed = isCollapsed;
+    localStorage.setItem('heroCollapsed', isCollapsed);
+    if (isCollapsed) {
+        toggle.innerHTML = '<span id="heroToggleIcon">▼</span> Expand';
+    } else {
+        toggle.innerHTML = '<span id="heroToggleIcon">▲</span> Collapse';
+    }
+}
+
+function quickAction(action) {
+    switch(action) {
+        case 'device':
+            switchTab('search');
+            document.getElementById('searchInput').focus();
+            break;
+        case 'user':
+            switchTab('users');
+            document.getElementById('userSearchInput').focus();
+            break;
+        case 'reports':
+            switchTab('reports');
+            break;
+        case 'recent':
+            showRecentSearches();
+            break;
+    }
+}
+
+function showRecentSearches() {
+    const panel = document.getElementById('recentSearchesPanel');
+    const list = document.getElementById('recentSearchesList');
+    const allSearches = [
+        ...AppState.searchHistory.map(s => ({...s, type: 'device'})),
+        ...AppState.userSearchHistory.map(s => ({...s, type: 'user'}))
+    ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 10);
+    if (allSearches.length === 0) {
+        list.innerHTML = '<div style="color: rgba(255,255,255,0.6); text-align:center; padding:20px;">No recent searches</div>';
+    } else {
+        list.innerHTML = allSearches.map(s => `
+            <div class="recent-item" onclick="executeRecentSearch('${s.query}', '${s.type}')">
+                <span class="recent-item-text">${s.query}</span>
+                <span class="recent-item-type">${s.type === 'device' ? '💻' : '👤'}</span>
+            </div>
+        `).join('');
+    }
+    panel.style.display = 'block';
+}
+
+function closeRecentSearches() {
+    document.getElementById('recentSearchesPanel').style.display = 'none';
+}
+
+function executeRecentSearch(query, type) {
+    closeRecentSearches();
+    if (type === 'device') {
+        switchTab('search');
+        document.getElementById('searchInput').value = query;
+        searchDevices();
+    } else {
+        switchTab('users');
+        document.getElementById('userSearchInput').value = query;
+        searchUsers();
+    }
+}
+
+function addToSearchHistory(query, type) {
+    const history = type === 'device' ? AppState.searchHistory : AppState.userSearchHistory;
+    const storageKey = type === 'device' ? 'searchHistory' : 'userSearchHistory';
+    const filtered = history.filter(s => s.query !== query);
+    filtered.unshift({
+        query: query,
+        timestamp: new Date().toISOString()
+    });
+    const trimmed = filtered.slice(0, 20);
+    if (type === 'device') {
+        AppState.searchHistory = trimmed;
+    } else {
+        AppState.userSearchHistory = trimmed;
+    }
+    localStorage.setItem(storageKey, JSON.stringify(trimmed));
+}
+
+async function refreshStats() {
+    const refreshIcon = document.getElementById('refreshIcon');
+    refreshIcon.classList.add('loading-spinner');
+    refreshIcon.style.fontSize = '1em';
+    try {
+        await fetchDashboardStats();
+        showToast('Device statistics refreshed', 'success');
+        refreshIcon.classList.remove('loading-spinner');
+        refreshIcon.textContent = '✅';
+        setTimeout(() => {
+            refreshIcon.textContent = '🔄';
+            refreshIcon.style.fontSize = '';
+        }, 2000);
+    } catch (e) {
+        showToast('Failed to refresh statistics', 'error');
+        refreshIcon.classList.remove('loading-spinner');
+        refreshIcon.textContent = '❌';
+        setTimeout(() => {
+            refreshIcon.textContent = '🔄';
+            refreshIcon.style.fontSize = '';
+        }, 2000);
+    }
+}
+
+function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+        toast.style.animation = 'slideIn 0.3s ease reverse';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+function switchTab(t){
+    document.querySelectorAll('.tab').forEach(b => {
+        b.classList.remove('active');
+        if (b.getAttribute('data-tab') === t) {
+            b.classList.add('active');
+        }
+    });
+    document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+    document.getElementById(t+'Tab').classList.add('active');
+}
+async function searchDevices(){
+    const q=document.getElementById('searchInput').value.trim();
+    if(!q){alert('Enter search term');return}
+    addToSearchHistory(q, 'device');
+    const r=document.getElementById('resultsContainer');
+    r.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="margin-top:15px;color:var(--text-secondary)">Searching devices...</div></div>';
+    try{
+        const res=await fetch(`/api/combined/search?query=${encodeURIComponent(q)}`);
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Search failed');
+        displayResults(data.devices);
+        document.getElementById('searchInfo').innerHTML=`Found ${data.count} device(s)`;
+        showToast(`Found ${data.count} device(s)`, 'success');
+    }catch(e){
+        r.innerHTML=`<div style="background:#ffebee;color:#c62828;padding:15px;border-radius:8px">Error: ${e.message}</div>`;
+        showToast(`Search failed: ${e.message}`, 'error');
+    }
+}
+function displayResults(devices){const c=document.getElementById('resultsContainer');if(!devices||devices.length===0){c.innerHTML='<div class="no-results">No devices found</div>';return}
+let h='';devices.forEach(d=>{const st=d.googleStatus||'N/A';const bc=st==='ACTIVE'?'badge-active':'badge-disabled';const dt=d.deviceType||'Unknown';let ru='';if(d.recentUsers&&d.recentUsers.length>0){ru=`<div style="margin-top:15px;padding-top:15px;border-top:1px solid #ddd"><div class="field-label">📋 RECENT USERS</div><div>${d.recentUsers.map(u=>`<span class="user-chip">${u}</span>`).join('')}</div></div>`}
+const iiqLink=`https://crsd.incidentiq.com/agent/assets/${d.assetId||''}?asset-details-tab=details`;const isChrome=dt==='Chromebooks';const googleLink=`https://admin.google.com/ac/chrome/devices/${d.deviceId||d.serialNumber}?journey=217`;const typeBadgeColor=isChrome?'#4caf50':'#ff9800';const typeIcon=isChrome?'💻':'📱';h+=`<div class="device-card"><div class="device-header"><div><a href="${iiqLink}" target="_blank" style="text-decoration:none;color:inherit"><span class="device-serial" style="cursor:pointer;text-decoration:underline">🏷️ ${d.assetTag}</span><span style="font-size:0.7em;color:#666;margin-left:5px">(Click to view in IIQ)</span></a><div style="font-size:0.8em;color:#666;margin-top:4px"><span style="background:${typeBadgeColor};color:white;padding:2px 8px;border-radius:12px;font-size:0.85em;font-weight:bold">${typeIcon} ${dt}</span></div></div><span class="device-badge ${bc}">${st}</span></div><div class="device-grid"><div><div class="field-label">🔢 SERIAL NUMBER</div><div class="field-value">${isChrome?`<a href="${googleLink}" target="_blank" style="color:#1976d2;text-decoration:underline">${d.serialNumber}</a><span style="font-size:0.8em;color:#666;margin-left:5px">(Click to view in Google)</span>`:`${d.serialNumber}`}</div></div><div><div class="field-label">👤 USER</div><div class="field-value">${d.assignedUser}</div></div><div><div class="field-label">🌐 MAC</div><div class="field-value">${d.macAddress}</div></div><div><div class="field-label">🌍 IP ADDRESS</div><div class="field-value">${d.ipAddress||'N/A'}</div></div><div><div class="field-label">💻 MODEL</div><div class="field-value">${d.model}</div></div><div><div class="field-label">📍 LOCATION</div><div class="field-value">${d.location||'N/A'}</div></div><div><div class="field-label">💿 OS</div><div class="field-value">${d.osVersion||'N/A'}</div></div><div><div class="field-label">🔄 LAST SYNC</div><div class="field-value">${fmt(d.lastSync)}</div></div><div><div class="field-label">👤 LAST USER</div><div class="field-value">${d.lastKnownUser||'N/A'}</div></div><div><div class="field-label">📁 ORG UNIT</div><div class="field-value">${d.orgUnitPath||'N/A'}</div></div>
+${d.merakiApName?`<div><div class="field-label">📍 LAST KNOWN AP</div><div class="field-value">${d.merakiApName} ${d.merakiNetwork?`(${d.merakiNetwork})`:''}</div></div>`:''}
+${d.merakiLastSeen?`<div><div class="field-label">🕐 MERAKI LAST SEEN</div><div class="field-value">${fmt(d.merakiLastSeen)} ${d.merakiNote?`<span style="font-size:0.85em;color:${d.merakiNewer?'green':'orange'};font-style:italic">(${d.merakiNote})</span>`:''}</div></div>`:''}</div>${ru}</div>`});c.innerHTML=h}
+function clearSearch(){document.getElementById('searchInput').value='';document.getElementById('searchInfo').innerHTML='';document.getElementById('resultsContainer').innerHTML='<div class="no-results">Enter search term</div>'}
+function fmt(d){if(!d||d==='N/A')return'N/A';try{return new Date(d).toLocaleString()}catch{return d}}
+
+async function searchUsers(){
+    const q=document.getElementById('userSearchInput').value.trim();
+    if(!q){alert('Enter search term');return}
+    addToSearchHistory(q, 'user');
+    const r=document.getElementById('userResultsContainer');
+    r.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="margin-top:15px;color:var(--text-secondary)">Searching users...</div></div>';
+    try{
+        const res=await fetch(`/api/user/search?query=${encodeURIComponent(q)}`);
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.detail||'Search failed');
+        displayUserResults(data.users);
+        document.getElementById('userSearchInfo').innerHTML=`Found ${data.count} user(s)`;
+        showToast(`Found ${data.count} user(s)`, 'success');
+    }catch(e){
+        r.innerHTML=`<div style="background:#ffebee;color:#c62828;padding:15px;border-radius:8px">Error: ${e.message}</div>`;
+        showToast(`User search failed: ${e.message}`, 'error');
+    }
+}
+function displayUserResults(users){
+const c=document.getElementById('userResultsContainer');
+if(!users||users.length===0){c.innerHTML='<div class="no-results">No users found</div>';return}
+let h='';
+users.forEach(u=>{
+const status=u.isActive?'ACTIVE':'INACTIVE';
+const bc=u.isActive?'badge-active':'badge-disabled';
+let devices='';
+if(u.assignedDevices&&u.assignedDevices.length>0){
+devices+=`<div style="margin-top:15px;padding-top:15px;border-top:1px solid #ddd"><div class="field-label">📦 ASSIGNED DEVICES (${u.assignedCount})</div><div style="margin-top:8px">`;
+u.assignedDevices.forEach(d=>{
+const aLink=d.assetTag!=='N/A'?`<a href="javascript:void(0)" onclick="searchDeviceFromUser('${d.assetTag}')" style="color:#1976d2;text-decoration:underline">${d.assetTag}</a>`:d.assetTag;
+devices+=`<div style="background:#e8f5e9;padding:8px;margin:4px 0;border-radius:4px;font-size:0.9em"><strong>Asset:</strong> ${aLink} | <strong>Serial:</strong> ${d.serialNumber} | <strong>Model:</strong> ${d.model} | <strong>Type:</strong> ${d.deviceType}</div>`;
+});
+devices+=`</div></div>`;
+}
+if(u.recentDevices&&u.recentDevices.length>0){
+devices+=`<div style="margin-top:15px;padding-top:15px;border-top:1px solid #ddd"><div class="field-label">💻 RECENT CHROMEBOOKS (${u.deviceCount})</div><div style="margin-top:8px">`;
+u.recentDevices.forEach(d=>{
+const aLink=d.assetTag!=='N/A'?`<a href="javascript:void(0)" onclick="searchDeviceFromUser('${d.assetTag}')" style="color:#1976d2;text-decoration:underline">${d.assetTag}</a>`:d.assetTag;
+devices+=`<div style="background:#f0f0f0;padding:8px;margin:4px 0;border-radius:4px;font-size:0.9em"><strong>Asset:</strong> ${aLink} | <strong>Serial:</strong> ${d.serialNumber} | <strong>Model:</strong> ${d.model}</div>`;
+});
+devices+=`</div></div>`;
+}
+h+=`<div class="device-card"><div class="device-header"><div><span class="device-serial">👤 ${u.fullName}</span><div style="font-size:0.8em;color:#666;margin-top:4px">📧 ${u.email}</div></div><span class="device-badge ${bc}">${status}</span></div><div class="device-grid"><div><div class="field-label">🏫 LOCATION</div><div class="field-value">${u.location}</div></div><div><div class="field-label">📚 GRADE</div><div class="field-value">${u.grade||'N/A'}</div></div><div><div class="field-label">📁 ORG UNIT</div><div class="field-value">${u.googleOrgUnit||'N/A'}</div></div><div><div class="field-label">💻 DEVICES</div><div class="field-value">${u.assignedCount||0}</div></div></div>${devices}</div>`;
+});
+c.innerHTML=h;
+}
+function clearUserSearch(){document.getElementById('userSearchInput').value='';document.getElementById('searchInfo').innerHTML='';document.getElementById('userResultsContainer').innerHTML='<div class="no-results">Enter user name or email</div>'}
+function searchDeviceFromUser(assetTag){switchTab('search');document.getElementById('searchInput').value=assetTag;searchDevices()}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        quickAction('device');
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'u') {
+        e.preventDefault();
+        quickAction('user');
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'h') {
+        e.preventDefault();
+        toggleHero();
+    }
+    if (e.key === 'Escape') {
+        const panel = document.getElementById('recentSearchesPanel');
+        if (panel.style.display === 'block') {
+            closeRecentSearches();
+        }
+    }
+});
+</script></body></html>"""
+    
+    # Use simple .replace() to insert the reports content
+    html_content = dashboard_template.replace('[[REPORTS_EMBED]]', reports_embed_html)
+
+    return HTMLResponse(html_content)

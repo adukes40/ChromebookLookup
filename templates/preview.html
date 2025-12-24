@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Chromebook Dashboard - Design Preview</title>
+<link rel="stylesheet" href="/static/css/preview.css?v=20251224-1805">
+<style>
+/* Preview Banner */
+.preview-banner {
+    background: linear-gradient(135deg, #ff9800 0%, #f44336 100%);
+    color: white;
+    padding: 15px 30px;
+    text-align: center;
+    font-weight: bold;
+    box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
+    margin-bottom: 20px;
+    border-radius: 8px;
+}
+.preview-banner a {
+    color: white;
+    text-decoration: underline;
+    margin-left: 20px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Preview Banner -->
+<div class="preview-banner">
+    🎨 DESIGN PREVIEW MODE - This is the NEW design
+    <a href="/dashboard">← Back to Production Dashboard</a>
+</div>
+
+<div id="heroSection" class="hero-section">
+  <div class="hero-content">
+    <div class="hero-text">
+      <h2 class="hero-title">Welcome to The Rider Tech View</h2>
+      <p class="hero-subtitle">Unified device management across IncidentIQ, Google Workspace, and Meraki</p>
+    </div>
+    <div class="quick-stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon">💻</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statTotalDevices">—</div>
+          <div class="stat-label">Total Devices</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statActiveDevices">—</div>
+          <div class="stat-label">Active Devices</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">❌</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statDisabledDevices">—</div>
+          <div class="stat-label">Disabled</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-content">
+          <div class="stat-value" id="statDeprovisionedDevices">—</div>
+          <div class="stat-label">Deprovisioned</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="quick-actions">
+    <h3 class="quick-actions-title">Quick Actions</h3>
+    <div class="action-grid">
+      <button class="action-card" onclick="quickAction('device')">
+        <div class="action-icon">🔍</div>
+        <div class="action-text">
+          <div class="action-title">Device Search</div>
+          <div class="action-desc">Find by serial or asset tag</div>
+        </div>
+      </button>
+      <button class="action-card" onclick="quickAction('user')">
+        <div class="action-icon">👤</div>
+        <div class="action-text">
+          <div class="action-title">User Search</div>
+          <div class="action-desc">Find user assignments</div>
+        </div>
+      </button>
+      <button class="action-card" onclick="quickAction('reports')">
+        <div class="action-icon">📊</div>
+        <div class="action-text">
+          <div class="action-title">Analytics</div>
+          <div class="action-desc">View dashboard reports</div>
+        </div>
+      </button>
+      <button class="action-card" onclick="quickAction('recent')">
+        <div class="action-icon">🕐</div>
+        <div class="action-text">
+          <div class="action-title">Recent Searches</div>
+          <div class="action-desc">View search history</div>
+        </div>
+      </button>
+    </div>
+  </div>
+
+  <div class="recent-searches-panel" id="recentSearchesPanel" style="display:none;">
+    <div class="panel-header">
+      <h3>Recent Searches</h3>
+      <button class="panel-close" onclick="closeRecentSearches()">✕</button>
+    </div>
+    <div id="recentSearchesList" class="recent-list"></div>
+  </div>
+
+  <button class="hero-toggle" id="heroToggle" onclick="toggleHero()">
+    <span id="heroToggleIcon">▲</span> Collapse
+  </button>
+</div>
+
+<div class="tabs-container">
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('search')" data-tab="search">
+      <span class="tab-icon">🔍</span>
+      <span class="tab-label">Device Search</span>
+      <span class="tab-count" id="deviceCount"></span>
+    </button>
+    <button class="tab" onclick="switchTab('users')" data-tab="users">
+      <span class="tab-icon">👤</span>
+      <span class="tab-label">User Search</span>
+      <span class="tab-count" id="userCount"></span>
+    </button>
+    <button class="tab" onclick="switchTab('reports')" data-tab="reports">
+      <span class="tab-icon">📊</span>
+      <span class="tab-label">Reports</span>
+    </button>
+  </div>
+  <div class="tabs-actions">
+    <button class="icon-button" onclick="refreshStats()" title="Refresh Device Statistics">
+      <span id="refreshIcon">🔄</span>
+    </button>
+    <button class="icon-button" onclick="window.location.href='/logout'" title="Logout">
+      <span>🚪</span>
+    </button>
+  </div>
+</div>
+<div id="searchTab" class="tab-content active">
+<div class="search-container">
+<input type="text" id="searchInput" class="search-input" placeholder="Search by serial or asset tag" onkeypress="if(event.key==='Enter')searchDevices()">
+<button class="search-button" onclick="searchDevices()">Search</button>
+<button class="clear-button" onclick="clearSearch()">Clear</button>
+</div>
+<div id="searchInfo"></div>
+<div id="resultsContainer"><div class="no-results">Enter search term to see the NEW card design</div></div>
+</div>
+<div id="usersTab" class="tab-content">
+<div class="search-container">
+<input type="text" id="userSearchInput" class="search-input" placeholder="Search by name, email, or ID..." onkeypress="if(event.key==='Enter')searchUsers()">
+<button class="search-button" onclick="searchUsers()">Search</button>
+<button class="clear-button" onclick="clearUserSearch()">Clear</button>
+</div>
+<div id="userSearchInfo"></div>
+<div id="userResultsContainer"><div class="no-results">Enter user name or email</div></div>
+</div>
+<div id="reportsTab" class="tab-content">
+    <div style="margin-bottom: 20px;">
+        <h2 style="color: #00A3FF;">📊 Chromebook Analytics</h2>
+        <p style="color: #999;">Dashboard updates daily at 2 AM with device data from Google Workspace</p>
+    </div>
+
+    <iframe
+        width="100%"
+        height="1200"
+        src="https://lookerstudio.google.com/embed/reporting/ccaee7cd-a2ef-48bf-9d50-fc8d858d2f98/page/4j1iF"
+        frameborder="0"
+        style="border:0"
+        allowfullscreen>
+    </iframe>
+</div>
+</div>
+<script src="/static/js/preview.js?v=20251224-1805"></script>
+</body>
+</html>

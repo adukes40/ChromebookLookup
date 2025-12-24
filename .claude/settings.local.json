@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(xargs ls:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(systemctl restart:*)",
+      "Bash(curl:*)",
+      "Bash(timeout 30 python3:*)",
+      "Bash(GOOGLE_CUSTOMER_ID=my_customer timeout 30 python3:*)",
+      "Bash(systemctl:*)",
+      "Bash(journalctl:*)",
+      "Bash(chown:*)",
+      "Bash(chmod:*)",
+      "Bash(redis-cli INFO:*)"
+    ]
+  }
+}
