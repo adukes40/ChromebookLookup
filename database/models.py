@@ -23,7 +23,22 @@ class Chromebook(Base):
     wan_ip_address = Column(String(100))
     aue_date = Column(String(20))
     aue_timestamp = Column(BigInteger)
-    
+
+    # Quick Wins Phase 2: Device lifecycle & extended fields
+    auto_update_expiration = Column(String(20))  # YYYY-MM-DD format from autoUpdateThrough
+    support_end_date = Column(String(20))
+    boot_mode = Column(String(50))  # Verified, Dev, etc.
+    device_license_type = Column(String(100))
+    extended_support_enabled = Column(Boolean, default=False)
+    extended_support_eligible = Column(Boolean, default=False)
+    manufacture_date = Column(String(20))
+    first_enrollment_time = Column(String(50))
+    deprovision_reason = Column(String(255))
+    last_known_network_name = Column(String(255))
+    last_known_network_ssid = Column(String(255))
+    os_update_state = Column(String(50))
+    os_target_version = Column(String(100))
+
     # Battery health data
     battery_health = Column(Integer)  # Percentage (0-100)
     battery_cycle_count = Column(Integer)
@@ -95,9 +110,14 @@ class Chromebook(Base):
                 'ap_name': self.meraki_ap_name,
                 'network': self.meraki_network
             } if self.last_seen_meraki else None,
-'mac_address': self.mac_address,            'ethernet_mac': self.ethernet_mac,            'ip_address': self.ip_address,            'os_version': self.os_version,            'platform_version': self.platform_version,            'firmware_version': self.firmware_version,
-'wan_ip_address': self.wan_ip_address,
-'last_used_date': self.last_used_date.isoformat() if self.last_used_date else None,
+            'mac_address': self.mac_address,
+            'ethernet_mac': self.ethernet_mac,
+            'ip_address': self.ip_address,
+            'os_version': self.os_version,
+            'platform_version': self.platform_version,
+            'firmware_version': self.firmware_version,
+            'wan_ip_address': self.wan_ip_address,
+            'last_used_date': self.last_used_date.isoformat() if self.last_used_date else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'battery_health': self.battery_health,
             'battery_cycle_count': self.battery_cycle_count
@@ -123,7 +143,11 @@ class User(Base):
     # Device assignments (JSON array of device IDs)
     assigned_devices = Column(JSON)  # List of device_ids
     device_count = Column(Integer, default=0)
-    
+
+    # Student data (from Google customSchemas.Student_Data or IIQ Owner.StudentId)
+    student_id = Column(String(50), index=True)
+    student_grade = Column(String(20))
+
     # Metadata
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -143,9 +167,6 @@ class User(Base):
             'assigned_devices': self.assigned_devices or [],
             'device_count': self.device_count,
             'last_login': self.last_login.isoformat() if self.last_login else None,
-'mac_address': self.mac_address,            'ethernet_mac': self.ethernet_mac,            'ip_address': self.ip_address,            'os_version': self.os_version,            'platform_version': self.platform_version,            'firmware_version': self.firmware_version,
-'wan_ip_address': self.wan_ip_address,
-'last_used_date': self.last_used_date.isoformat() if self.last_used_date else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
@@ -167,6 +188,8 @@ class Asset(Base):
     # Assignment (from IIQ)
     owner_email = Column(String(255), index=True)
     owner_name = Column(String(255))
+    owner_student_id = Column(String(50), index=True)  # Student ID from IIQ Owner.SchoolIdNumber
+    owner_student_grade = Column(String(20))  # Student grade from IIQ Owner.Grade
     location = Column(String(255))
     room = Column(String(100))
 
@@ -228,13 +251,9 @@ class MerakiClient(Base):
             'network': self.network_name,
             'ap_name': self.ap_name,
             'ip_address': self.ip_address,
-'wan_ip_address': self.wan_ip_address,
             'vlan': self.vlan,
             'first_seen': self.first_seen.isoformat() if self.first_seen else None,
             'last_seen': self.last_seen.isoformat() if self.last_seen else None,
-'mac_address': self.mac_address,            'ethernet_mac': self.ethernet_mac,            'ip_address': self.ip_address,            'os_version': self.os_version,            'platform_version': self.platform_version,            'firmware_version': self.firmware_version,
-'wan_ip_address': self.wan_ip_address,
-'last_used_date': self.last_used_date.isoformat() if self.last_used_date else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 

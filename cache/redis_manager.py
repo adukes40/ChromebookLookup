@@ -340,6 +340,14 @@ class CacheKeys:
         return "report:aue_status"
 
     @staticmethod
+    def dashboard_aue_expiration() -> str:
+        return "dashboard:aue_expiration"
+
+    @staticmethod
+    def dashboard_security_alerts() -> str:
+        return "dashboard:security_alerts"
+
+    @staticmethod
     def report_aue_year(year: str) -> str:
         return f"report:aue_year:{year}"
 
@@ -350,3 +358,24 @@ class CacheKeys:
     @staticmethod
     def invalidate_all_reports() -> str:
         return "report:*"
+
+    # IIQ (IncidentIQ) cache keys
+    @staticmethod
+    def iiq_asset_dump() -> str:
+        """Full asset dump cache (updated every 24 hours)"""
+        return "iiq:assets:dump"
+
+    @staticmethod
+    def iiq_asset_search(query: str) -> str:
+        """Asset search query cache (5-minute dedup)"""
+        return f"iiq:assets:search:{query.lower()}"
+
+    @staticmethod
+    def iiq_fee_endpoint() -> str:
+        """Cached successful fee endpoint URL"""
+        return "iiq:fee:endpoint"
+
+    @staticmethod
+    def iiq_user_fees(user_id: str) -> str:
+        """User fee balance cache (5-minute dedup)"""
+        return f"iiq:fees:user:{user_id}"

@@ -2,6 +2,9 @@
 import requests
 import logging
 from typing import Dict, List, Optional
+from cache.redis_manager import cache, CacheKeys
+import hashlib
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -20,28 +23,69 @@ class IncidentIQClient:
     # ========== ASSET METHODS ==========
     
     def get_asset_by_tag(self, asset_tag: str) -> Optional[Dict]:
-        """Get asset by exact asset tag"""
+        """Get asset by exact asset tag.
+
+        OPTIMIZATION: Caches results for 5 minutes to deduplicate rapid lookups.
+        """
         try:
+            # Check cache first
+            cache_key = f"iiq:asset:tag:{asset_tag.upper()}"
+            cached_asset = cache.get(cache_key)
+            if cached_asset is not None:
+                if cached_asset == "NOT_FOUND":
+                    # Cached miss result
+                    return None
+                logger.info(f"Cache HIT: Returning cached asset for tag {asset_tag}")
+                return cached_asset
+
             url = f'{self.base_url}/assets/assettag/{asset_tag}'
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            
+
             data = response.json()
             if data.get('ItemCount', 0) > 0:
-                return data.get('Items', [])[0]
-            return None
+                result = data.get('Items', [])[0]
+                # Cache for 5 minutes
+                cache.set(cache_key, result, ttl=300)
+                return result
+            else:
+                # Cache miss for 5 minutes to avoid repeated lookups
+                cache.set(cache_key, "NOT_FOUND", ttl=300)
+                return None
         except Exception as e:
             logger.error(f"Error fetching asset by tag: {e}")
             return None
     
     def search_assets(self, query: str, limit: int = 50) -> List[Dict]:
-        """Search for assets - tries direct lookup first, then search with pagination"""
+        """Search for assets - tries direct lookup first, then search with pagination.
+
+        OPTIMIZATION: Full asset dumps (empty query) are cached for 24 hours.
+        Individual searches are deduplicated for 5 minutes.
+        """
         try:
             # Try direct lookup first if query is not empty
             if query:
+                # Check for 5-minute dedup cache on individual searches
+                cache_key = CacheKeys.iiq_asset_search(query)
+                cached_result = cache.get(cache_key)
+                if cached_result is not None:
+                    logger.info(f"Cache HIT: Returning {len(cached_result)} assets for '{query}' (dedup 5min)")
+                    return cached_result
+
                 direct = self.get_asset_by_tag(query)
                 if direct:
-                    return [direct]
+                    result = [direct]
+                    # Cache for 5 minutes (300 seconds)
+                    cache.set(cache_key, result, ttl=300)
+                    return result
+
+            # OPTIMIZATION: Check for 24-hour cache on full asset dump (empty query)
+            if not query:
+                cache_key = CacheKeys.iiq_asset_dump()
+                cached_dump = cache.get(cache_key)
+                if cached_dump is not None:
+                    logger.info(f"Cache HIT: Returning {len(cached_dump)} assets from 24-hour full dump cache")
+                    return cached_dump[:limit]
 
             # Fall back to paginated search
             all_items = []
@@ -85,7 +129,19 @@ class IncidentIQClient:
                 skip += page_size
 
             logger.info(f"Search found {len(all_items)} total assets for '{query}'")
-            return all_items[:limit]  # Respect the limit
+            result = all_items[:limit]
+
+            # OPTIMIZATION: Cache full asset dumps for 24 hours
+            if not query:
+                cache_key = CacheKeys.iiq_asset_dump()
+                cache.set(cache_key, result, ttl=86400)  # 24 hours
+                logger.info(f"Cached full asset dump ({len(result)} assets) for 24 hours")
+            else:
+                # Cache search results for 5 minutes (dedup)
+                cache_key = CacheKeys.iiq_asset_search(query)
+                cache.set(cache_key, result, ttl=300)
+
+            return result
         except Exception as e:
             logger.error(f"Search failed: {e}")
             return []
@@ -104,13 +160,15 @@ class IncidentIQClient:
             owner = asset.get('Owner', {})
             owner_name = owner.get('FullName', 'Not assigned') if isinstance(owner, dict) else 'Not assigned'
             owner_email = owner.get('Email', '') if isinstance(owner, dict) else ''
-            
+            owner_student_id = owner.get('SchoolIdNumber', '') if isinstance(owner, dict) else ''  # Fixed: was StudentId
+            owner_grade = owner.get('Grade', '') if isinstance(owner, dict) else ''
+
             location = asset.get('Location', {})
             location_name = location.get('Name', 'N/A') if isinstance(location, dict) else 'N/A'
-            
+
             status = asset.get('Status', {})
             status_name = status.get('Name', 'N/A') if isinstance(status, dict) else 'N/A'
-            
+
             return {
                 'assetId': asset.get('AssetId', ''),
                 'assetTag': asset.get('AssetTag', 'N/A'),
@@ -118,6 +176,8 @@ class IncidentIQClient:
                 'model': model_name,
                 'assignedUser': owner_name,
                 'assignedUserEmail': owner_email,
+                'assignedUserStudentId': owner_student_id,
+                'assignedUserGrade': owner_grade,
                 'location': location_name,
                 'room': asset.get('LocationRoomId', 'N/A'),
                 'status': status_name,
@@ -225,3 +285,135 @@ class IncidentIQClient:
         """Search users and return formatted results"""
         raw = self.search_users(query, limit)
         return [self.extract_user_info(u) for u in raw]
+
+    # ========== FEE/INVOICE METHODS ==========
+
+    def get_user_fees(self, user_id: str) -> Dict:
+        """Get fee balance for a user with proper IIQ API headers.
+
+        OPTIMIZATION: Caches the successful fee endpoint URL to avoid redundant testing.
+        Results also cached for 5 minutes to deduplicate rapid requests.
+        """
+        try:
+            # OPTIMIZATION: Check for 5-minute dedup cache on fee queries
+            cache_key = CacheKeys.iiq_user_fees(user_id)
+            cached_fees = cache.get(cache_key)
+            if cached_fees is not None:
+                logger.info(f"Cache HIT: Returning cached fees for user {user_id} (dedup 5min)")
+                return cached_fees
+
+            # FIXED: Add required headers for IIQ API v1.0
+            # Many IIQ endpoints require siteid, productid, and client headers
+            headers = self.session.headers.copy()
+            headers.update({
+                'siteid': self.site_id,
+                'productid': self.product_id,
+                'client': 'ApiClient'
+            })
+
+            # OPTIMIZATION: Try cached successful endpoint first
+            successful_endpoint = cache.get(CacheKeys.iiq_fee_endpoint())
+            if successful_endpoint:
+                logger.info(f"Using cached successful fee endpoint: {successful_endpoint}")
+                try:
+                    response = self.session.get(successful_endpoint.format(user_id=user_id), headers=headers, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        result = self._extract_fee_info(data)
+                        # Cache for 5 minutes
+                        cache.set(cache_key, result, ttl=300)
+                        return result
+                except Exception as e:
+                    logger.warning(f"Cached endpoint failed, will rediscover: {e}")
+                    # Fall through to endpoint discovery
+
+            # Try Fee Tracker module endpoints first (most likely)
+            endpoints = [
+                f'{self.base_url}/feetracker/users/{{user_id}}/balance',
+                f'{self.base_url}/feetracker/users/{{user_id}}',
+                f'{self.base_url}/apps/feetracker/users/{{user_id}}',
+                # Fallback to original endpoints
+                f'{self.base_url}/users/{{user_id}}/fees',
+                f'{self.base_url}/fees/user/{{user_id}}',
+                f'{self.base_url}/invoices/user/{{user_id}}'
+            ]
+
+            for endpoint_template in endpoints:
+                url = endpoint_template.format(user_id=user_id)
+                try:
+                    response = self.session.get(url, headers=headers, timeout=10)
+                    logger.info(f"Fee API attempt: {url} - Status: {response.status_code}")
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        logger.info(f"✅ Successfully fetched fees from {url}")
+                        logger.debug(f"Fee data response: {data}")
+                        result = self._extract_fee_info(data)
+
+                        # OPTIMIZATION: Cache successful endpoint (without user_id param) for future use
+                        cache.set(CacheKeys.iiq_fee_endpoint(), endpoint_template, ttl=604800)  # 7 days
+                        logger.info(f"Cached successful fee endpoint for 7 days: {endpoint_template}")
+
+                        # Cache result for 5 minutes
+                        cache.set(cache_key, result, ttl=300)
+                        return result
+                    elif response.status_code == 404:
+                        logger.debug(f"❌ 404 Not Found: {url}")
+                        continue  # Try next endpoint
+                    else:
+                        logger.warning(f"⚠️ Unexpected status {response.status_code} from {url}")
+                        continue
+                except Exception as e:
+                    logger.warning(f"Failed to fetch from {url}: {e}")
+                    continue
+
+            # If all endpoints fail, return zero balance
+            logger.warning(f"❌ Could not fetch fees for user {user_id} from any endpoint - all failed")
+            result = {'total_balance': 0.0, 'fees': [], 'endpoint_found': False}
+            # Cache even the failure result to avoid retrying immediately
+            cache.set(cache_key, result, ttl=300)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error fetching user fees: {e}")
+            return {'total_balance': 0.0, 'fees': [], 'endpoint_found': False}
+
+    def _extract_fee_info(self, fee_data: Dict) -> Dict:
+        """Extract fee information from IIQ API response"""
+        try:
+            # Handle different possible response structures
+            total_balance = 0.0
+            fees = []
+
+            # Check if response has a Balance field
+            if 'Balance' in fee_data:
+                total_balance = float(fee_data.get('Balance', 0))
+            elif 'TotalBalance' in fee_data:
+                total_balance = float(fee_data.get('TotalBalance', 0))
+
+            # Check for items/fees list
+            items = fee_data.get('Items', fee_data.get('Fees', []))
+
+            if isinstance(items, list):
+                for item in items:
+                    fee_entry = {
+                        'amount': float(item.get('Amount', 0)),
+                        'description': item.get('Description', 'Fee'),
+                        'date': item.get('Date', ''),
+                        'status': item.get('Status', '')
+                    }
+                    fees.append(fee_entry)
+                    # If no total balance provided, sum from items
+                    if total_balance == 0:
+                        # Only add unpaid/outstanding fees
+                        if fee_entry['status'].lower() in ['unpaid', 'outstanding', '']:
+                            total_balance += fee_entry['amount']
+
+            return {
+                'total_balance': total_balance,
+                'fees': fees,
+                'endpoint_found': True
+            }
+        except Exception as e:
+            logger.error(f"Error extracting fee info: {e}")
+            return {'total_balance': 0.0, 'fees': [], 'endpoint_found': False}
