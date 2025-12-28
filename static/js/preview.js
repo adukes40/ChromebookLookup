@@ -1,3 +1,6 @@
+// Version marker for debugging cache issues
+console.log('🔄 Preview.js loaded - Version: 20251225-phase2-v1 (Fee Balance + Quick Actions in header)');
+
 // State Management
 const AppState = {
     searchHistory: JSON.parse(localStorage.getItem('searchHistory') || '[]'),
@@ -225,9 +228,13 @@ function displayResults(devices) {
         const userSource = hasIiqUser
             ? '<span class="field-badge badge-iiq">IIQ Official</span>'
             : (hasGoogleUser ? '<span class="field-badge badge-google">Google</span>' : '');
-        const userName = device.iiqOwnerName && device.iiqOwnerEmail
-            ? `<div class="field-value-secondary">${escapeHtml(device.iiqOwnerName)}</div>`
-            : '';
+
+        // Build user name with student ID
+        let userName = '';
+        if (device.iiqOwnerName && device.iiqOwnerEmail) {
+            const studentIdText = device.iiqOwnerStudentId ? ` (${escapeHtml(device.iiqOwnerStudentId)})` : '';
+            userName = `<div class="field-value-secondary">${escapeHtml(device.iiqOwnerName)}${studentIdText}</div>`;
+        }
 
         // Build card
         html += `
@@ -241,24 +248,97 @@ function displayResults(devices) {
     c.innerHTML = html;
 }
 
+function generateQuickActionsCompact(device, isChromebook) {
+    const serialNumber = device.serialNumber || 'N/A';
+    const macAddress = device.macAddress || 'N/A';
+    const assetTag = device.assetTag || 'N/A';
+    const deviceId = device.deviceId || device.serialNumber;
+    const assetId = device.assetId || '';
+
+    // Construct URLs
+    const googleAdminUrl = (deviceId && isChromebook) ? `https://admin.google.com/ac/chrome/devices/${deviceId}?journey=217` : '';
+    const iiqUrl = assetId ? `https://crsd.incidentiq.com/agent/assets/${assetId}?asset-details-tab=details` : '';
+
+    // Check if external links are valid
+    const hasGoogleLink = googleAdminUrl !== '';
+    const hasIiqLink = iiqUrl !== '';
+
+    // Google G icon SVG
+    const googleIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>`;
+
+    // IncidentIQ icon (using their blue color scheme)
+    const iiqIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1" fill="#365C96"/><rect x="13" y="3" width="7" height="7" rx="1" fill="#365C96"/><rect x="3" y="13" width="7" height="7" rx="1" fill="#365C96"/><rect x="13" y="13" width="7" height="7" rx="1" fill="#365C96"/></svg>`;
+
+    // Escape for HTML attributes (simple version - only escape quotes and angle brackets)
+    const attrEscape = (str) => String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    return `
+        <div class="quick-actions-compact">
+            ${hasGoogleLink ? `<button class="quick-action-btn-compact" onclick="window.open('${googleAdminUrl}', '_blank')" title="Open in Google Admin">${googleIcon} Google</button>` : ''}
+            ${hasIiqLink ? `<button class="quick-action-btn-compact" onclick="window.open('${iiqUrl}', '_blank')" title="Open in IncidentIQ">${iiqIcon} IIQ</button>` : ''}
+            <button class="quick-action-btn-compact copy-btn" data-copy-type="Serial" data-copy-value="${attrEscape(serialNumber)}" title="Copy serial">📋 Serial</button>
+            ${macAddress !== 'N/A' ? `<button class="quick-action-btn-compact copy-btn" data-copy-type="MAC" data-copy-value="${attrEscape(macAddress)}" title="Copy MAC">🌐 MAC</button>` : ''}
+            <button class="quick-action-btn-compact copy-btn" data-copy-type="Asset Tag" data-copy-value="${attrEscape(assetTag)}" title="Copy asset tag">🏷️ Asset</button>
+        </div>
+    `;
+}
+
+function generateBatteryBadge(device) {
+    if (!device.batteryHealth && device.batteryHealth !== 0) {
+        return '';
+    }
+
+    const health = device.batteryHealth;
+    let badgeClass = 'badge-battery-excellent';
+    let icon = '🔋';
+    let label = 'Battery';
+
+    if (health < 30) {
+        badgeClass = 'badge-battery-critical';
+        icon = '🔴';
+        label = 'Battery';
+    } else if (health < 50) {
+        badgeClass = 'badge-battery-warning';
+        icon = '⚠️';
+        label = 'Battery';
+    } else if (health < 70) {
+        badgeClass = 'badge-battery-fair';
+        icon = '🟡';
+        label = 'Battery';
+    } else if (health < 90) {
+        badgeClass = 'badge-battery-good';
+        icon = '🟢';
+        label = 'Battery';
+    }
+
+    return `<span class="device-badge ${badgeClass}" title="Battery Health: ${health}%">${icon} ${label}: ${health}%</span>`;
+}
+
 function generateCardHeader(device, isChromebook, typeIcon, badgeClass, status, iiqLink) {
     return `
         <div class="device-header">
-            <div class="device-primary-info">
-                <div class="device-asset-tag">
-                    <a href="${iiqLink}" target="_blank" title="View in IncidentIQ">
-                        <span class="asset-icon">🏷️</span>
-                        <span>${escapeHtml(device.assetTag)}</span>
-                    </a>
+            <div class="device-header-top">
+                <div class="device-primary-info">
+                    <div class="device-asset-tag">
+                        <a href="${iiqLink}" target="_blank" title="View in IncidentIQ">
+                            <span class="asset-icon">🏷️</span>
+                            <span>${escapeHtml(device.assetTag)}</span>
+                        </a>
+                    </div>
+                    <div class="device-subtitle">Serial: ${escapeHtml(device.serialNumber)}</div>
                 </div>
-                <div class="device-subtitle">Serial: ${escapeHtml(device.serialNumber)}</div>
+                ${generateQuickActionsCompact(device, isChromebook)}
             </div>
-            <div class="device-status-badges">
-                <span class="device-badge ${badgeClass}">
-                    <span class="status-indicator"></span>
-                    <span>${status}</span>
-                </span>
-                ${device.iiqStatus ? `<span class="device-badge badge-iiq-status">IIQ: ${escapeHtml(device.iiqStatus)}</span>` : ''}
+            <div class="device-header-bottom">
+                <div class="status-heading">Statuses:</div>
+                <div class="device-status-badges">
+                    <span class="device-badge ${badgeClass}">
+                        <span class="status-indicator"></span>
+                        <span>🌐 Google: ${status}</span>
+                    </span>
+                    ${device.iiqStatus ? `<span class="device-badge badge-iiq-status">🎫 IIQ: ${escapeHtml(device.iiqStatus)}</span>` : ''}
+                    ${isChromebook ? generateBatteryBadge(device) : ''}
+                </div>
             </div>
         </div>
     `;
@@ -273,25 +353,24 @@ function generateCardContent(device, isChromebook, googleLink, userEmail, userSo
                 ${generateMerakiFields(device)}
             </div>
             ${generateRecentUsers(device)}
-            ${generateQuickActionsPanel(device)}
         </div>
     `;
 }
 
 function generatePriorityFields(device, isChromebook, googleLink, userEmail, userSource, userName) {
-    return `
-        <div class="device-field">
-            <div class="field-label">
-                <span class="field-icon">🔢</span>
-                <span>Serial Number</span>
-            </div>
-            <div class="field-value">
-                ${isChromebook
-                    ? `<a href="${googleLink}" target="_blank" title="View in Google Admin Console">${escapeHtml(device.serialNumber)}</a>`
-                    : escapeHtml(device.serialNumber)}
-            </div>
-        </div>
+    // Check for user mismatch (only for Chromebooks with both assigned and last known user)
+    let userMismatchWarning = '';
+    if (isChromebook && device.lastKnownUser && device.lastKnownUser !== 'N/A') {
+        const assignedUserEmail = (device.iiqOwnerEmail || device.assignedUser || '').toLowerCase();
+        const lastKnownEmail = device.lastKnownUser.toLowerCase();
 
+        if (assignedUserEmail && assignedUserEmail !== 'not assigned' && assignedUserEmail !== lastKnownEmail) {
+            userMismatchWarning = `<div class="field-warning">⚠️ User mismatch: Device recently used by different user</div>`;
+        }
+    }
+
+    return `
+        <!-- USER INFORMATION -->
         <div class="device-field">
             <div class="field-label">
                 <span class="field-icon">👤</span>
@@ -301,9 +380,21 @@ function generatePriorityFields(device, isChromebook, googleLink, userEmail, use
             <div class="field-value">
                 ${escapeHtml(userEmail)}
                 ${userName}
+                ${userMismatchWarning}
             </div>
         </div>
 
+        ${isChromebook && device.lastKnownUser ? `
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">🕐</span>
+                <span>Last Known User</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.lastKnownUser)}</div>
+        </div>
+        ` : ''}
+
+        <!-- DEVICE INFORMATION -->
         <div class="device-field">
             <div class="field-label">
                 <span class="field-icon">💻</span>
@@ -320,6 +411,17 @@ function generatePriorityFields(device, isChromebook, googleLink, userEmail, use
             <div class="field-value">${escapeHtml(device.location || 'N/A')}</div>
         </div>
 
+        ${isChromebook && device.orgUnitPath ? `
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">📁</span>
+                <span>Org Unit Path</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.orgUnitPath)}</div>
+        </div>
+        ` : ''}
+
+        <!-- NETWORK INFORMATION -->
         <div class="device-field">
             <div class="field-label">
                 <span class="field-icon">🌐</span>
@@ -336,6 +438,7 @@ function generatePriorityFields(device, isChromebook, googleLink, userEmail, use
             <div class="field-value">${escapeHtml(device.ipAddress || 'N/A')}</div>
         </div>
 
+        <!-- SOFTWARE INFORMATION -->
         <div class="device-field">
             <div class="field-label">
                 <span class="field-icon">💿</span>
@@ -343,11 +446,8 @@ function generatePriorityFields(device, isChromebook, googleLink, userEmail, use
             </div>
             <div class="field-value">${escapeHtml(device.osVersion || 'N/A')}</div>
         </div>
-    `;
-}
 
-function generateChromebookFields(device) {
-    return `
+        ${isChromebook && device.lastSync ? `
         <div class="device-field">
             <div class="field-label">
                 <span class="field-icon">🔄</span>
@@ -355,22 +455,61 @@ function generateChromebookFields(device) {
             </div>
             <div class="field-value">${fmt(device.lastSync)}</div>
         </div>
+        ` : ''}
+    `;
+}
 
+function generateBatteryDetails(device) {
+    if (!device.batteryHealth && device.batteryHealth !== 0) {
+        return '';
+    }
+
+    let cycleWarning = '';
+    if (device.batteryCycleCount && device.batteryCycleCount > 500) {
+        cycleWarning = ' <span style="color: #ff9800;">⚠️ High</span>';
+    }
+
+    let capacityLoss = '';
+    if (device.batteryFullChargeCapacity && device.batteryDesignCapacity) {
+        const loss = Math.round((1 - (device.batteryFullChargeCapacity / device.batteryDesignCapacity)) * 100);
+        if (loss > 10) {
+            capacityLoss = ` <span style="color: #999;">(${loss}% degraded)</span>`;
+        }
+    }
+
+    return `
         <div class="device-field">
             <div class="field-label">
-                <span class="field-icon">👤</span>
-                <span>Last Known User</span>
+                <span class="field-icon">🔋</span>
+                <span>Battery Health</span>
             </div>
-            <div class="field-value">${escapeHtml(device.lastKnownUser || 'N/A')}</div>
+            <div class="field-value">${device.batteryHealth}%${capacityLoss}</div>
         </div>
-
+        ${device.batteryCycleCount ? `
         <div class="device-field">
             <div class="field-label">
-                <span class="field-icon">📁</span>
-                <span>Org Unit Path</span>
+                <span class="field-icon">🔄</span>
+                <span>Charge Cycles</span>
             </div>
-            <div class="field-value">${escapeHtml(device.orgUnitPath || 'N/A')}</div>
+            <div class="field-value">${device.batteryCycleCount}${cycleWarning}</div>
         </div>
+        ` : ''}
+        ${device.batteryFullChargeCapacity && device.batteryDesignCapacity ? `
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">⚡</span>
+                <span>Battery Capacity</span>
+            </div>
+            <div class="field-value">${device.batteryFullChargeCapacity} / ${device.batteryDesignCapacity} mAh</div>
+        </div>
+        ` : ''}
+    `;
+}
+
+function generateChromebookFields(device) {
+    return `
+        <!-- BATTERY INFORMATION -->
+        ${generateBatteryDetails(device)}
     `;
 }
 
@@ -461,11 +600,8 @@ function displayUserResults(users) {
         return;
     }
 
-    // DEBUG: Show device counts in user info
     let html = '';
     users.forEach((u, userIndex) => {
-        // Show device counts as visible text for debugging
-        const debugInfo = `IIQ Assigned: ${u.iiqAssignedDevices ? u.iiqAssignedDevices.length : 0}, Recent: ${u.googleRecentDevices ? u.googleRecentDevices.length : 0}`;
         const status = u.isActive ? 'ACTIVE' : 'INACTIVE';
         const badgeClass = u.isActive ? 'badge-active' : 'badge-disabled';
         const userId = u.userId || '';
@@ -474,26 +610,38 @@ function displayUserResults(users) {
         const googleAdminLink = userId ? `https://admin.google.com/ac/users/${userId}` : '#';
         const iiqSearchLink = `https://crsd.incidentiq.com/agent/search?query=${encodeURIComponent(u.email)}`;
 
+        // Google G icon SVG
+        const googleIcon = `<svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/><path fill="none" d="M0 0h48v48H0z"/></svg>`;
+
+        // IncidentIQ icon
+        const iiqIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1" fill="#365C96"/><rect x="13" y="3" width="7" height="7" rx="1" fill="#365C96"/><rect x="3" y="13" width="7" height="7" rx="1" fill="#365C96"/><rect x="13" y="13" width="7" height="7" rx="1" fill="#365C96"/></svg>`;
+
         html += `
             <div class="device-card user-card">
                 <!-- User Header -->
                 <div class="device-header">
-                    <div class="device-primary-info">
-                        <div class="device-asset-tag">
-                            <span class="asset-icon">👤</span>
-                            <span>${escapeHtml(u.fullName)}${u.isStudent && u.studentId ? ` <span style="color: rgba(255,255,255,0.6); font-weight: 400;">(ID: ${escapeHtml(u.studentId)})</span>` : ''}</span>
+                    <div class="device-header-top">
+                        <div class="device-primary-info">
+                            <div class="device-asset-tag">
+                                <span class="asset-icon">👤</span>
+                                <span>${escapeHtml(u.fullName)}${u.isStudent && u.studentId ? ` <span style="color: rgba(255,255,255,0.6); font-weight: 400;">(ID: ${escapeHtml(u.studentId)})</span>` : ''}</span>
+                            </div>
+                            <div class="device-subtitle">${escapeHtml(u.email)}</div>
                         </div>
-                        <div class="device-subtitle">${escapeHtml(u.email)}</div>
-                        <div class="device-subtitle" style="color: yellow; font-size: 0.9em; margin-top: 4px;">DEBUG: ${debugInfo}</div>
+                        <div class="quick-actions-compact">
+                            ${userId ? `<button class="quick-action-btn-compact" onclick="window.open('${googleAdminLink}', '_blank')" title="Open in Google Admin">${googleIcon} Google</button>` : ''}
+                            <button class="quick-action-btn-compact" onclick="window.open('${iiqSearchLink}', '_blank')" title="Search in IncidentIQ">${iiqIcon} IIQ</button>
+                            <button class="quick-action-btn-compact copy-btn" data-copy-type="Email" data-copy-value="${escapeHtml(u.email)}" title="Copy email">📋 Email</button>
+                        </div>
                     </div>
-                    <div class="device-status-badges">
-                        <span class="device-badge ${badgeClass}">
-                            <span class="status-indicator"></span>
-                            <span>${status}</span>
-                        </span>
-                        <span class="device-badge badge-iiq" style="background: linear-gradient(135deg, #00A3FF 0%, #0077cc 100%); border: none;">
-                            <span>📊 IIQ</span>
-                        </span>
+                    <div class="device-header-bottom">
+                        <div class="status-heading">Status:</div>
+                        <div class="device-status-badges">
+                            <span class="device-badge ${badgeClass}">
+                                <span class="status-indicator"></span>
+                                <span>Google: ${status}</span>
+                            </span>
+                        </div>
                     </div>
                 </div>
 
@@ -503,16 +651,18 @@ function displayUserResults(users) {
                         <div class="device-field">
                             <div class="field-label">
                                 <span class="field-icon">📁</span>
-                                <span>Org Unit</span>
+                                <span>Google Org Unit</span>
                             </div>
                             <div class="field-value">${escapeHtml(u.googleOrgUnit || 'N/A')}</div>
                         </div>
                         <div class="device-field">
                             <div class="field-label">
-                                <span class="field-icon">💻</span>
-                                <span>Total Devices</span>
+                                <span class="field-icon">💰</span>
+                                <span>Fee Balance</span>
                             </div>
-                            <div class="field-value">${u.totalDeviceCount || 0}</div>
+                            <div class="field-value" style="color: ${u.feeBalance > 0 ? '#ff6b6b' : '#51cf66'}; font-weight: 600;">
+                                ${u.feeBalance > 0 ? '$' + u.feeBalance.toFixed(2) : '$0.00'}
+                            </div>
                         </div>
                         <div class="device-field">
                             <div class="field-label">
@@ -548,25 +698,6 @@ function displayUserResults(users) {
                                 <span>Username</span>
                             </div>
                             <div class="field-value">${escapeHtml(u.username || 'N/A')}</div>
-                        </div>
-                    </div>
-
-                    <!-- User Quick Actions -->
-                    <div class="quick-actions-panel">
-                        <div class="quick-actions-header">⚡ Quick Actions</div>
-                        <div class="quick-actions-buttons">
-                            <button class="quick-action-btn" onclick="window.open('${googleAdminLink}', '_blank')" ${!userId ? 'disabled' : ''}>
-                                <span class="quick-action-icon">⚙️</span>
-                                <span class="quick-action-text">View in Google</span>
-                            </button>
-                            <button class="quick-action-btn" onclick="window.open('${iiqSearchLink}', '_blank')">
-                                <span class="quick-action-icon">📊</span>
-                                <span class="quick-action-text">Search in IIQ</span>
-                            </button>
-                            <button class="quick-action-btn" onclick="copyToClipboard('Email', '${escapeHtml(u.email)}', this)">
-                                <span class="quick-action-icon">📋</span>
-                                <span class="quick-action-text">Copy Email</span>
-                            </button>
                         </div>
                     </div>
 
@@ -725,6 +856,19 @@ function toggleDeviceDetails(deviceId) {
 function clearUserSearch(){document.getElementById('userSearchInput').value='';document.getElementById('searchInfo').innerHTML='';document.getElementById('userResultsContainer').innerHTML='<div class="no-results">Enter user name or email</div>'}
 function searchDeviceFromUser(assetTag){switchTab('search');document.getElementById('searchInput').value=assetTag;searchDevices()}
 
+// Copy button event delegation
+document.addEventListener('click', function(e) {
+    const copyBtn = e.target.closest('.copy-btn');
+    if (copyBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const type = copyBtn.getAttribute('data-copy-type');
+        const value = copyBtn.getAttribute('data-copy-value');
+        console.log('Copy button clicked:', type, value);
+        copyToClipboard(type, value, copyBtn);
+    }
+});
+
 // Keyboard shortcuts
 document.addEventListener('keydown', function(e) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
@@ -755,33 +899,48 @@ document.addEventListener('keydown', function(e) {
  * Copy text to clipboard with visual feedback
  */
 async function copyToClipboard(type, value, buttonElement) {
+    console.log('copyToClipboard called with:', {type, value, buttonElement});
     try {
         // Check if value exists and is not N/A
         if (!value || value === 'N/A' || value === 'Not assigned') {
+            console.log('Value is N/A or not assigned');
             showToast(`No ${type} to copy`, 'warning');
             return;
         }
 
+        console.log('Attempting to copy to clipboard:', value);
         // Use Clipboard API
         await navigator.clipboard.writeText(value);
+        console.log('Successfully copied to clipboard');
 
         // Visual feedback on button
         if (buttonElement) {
             buttonElement.classList.add('success');
-            const originalText = buttonElement.querySelector('.quick-action-text').textContent;
-            buttonElement.querySelector('.quick-action-text').textContent = 'Copied!';
 
-            setTimeout(() => {
-                buttonElement.classList.remove('success');
-                buttonElement.querySelector('.quick-action-text').textContent = originalText;
-            }, 2000);
+            // Check if it's a compact button (text directly in button) or regular button (text in .quick-action-text)
+            const textElement = buttonElement.querySelector('.quick-action-text');
+            if (textElement) {
+                // Regular button
+                const originalText = textElement.textContent;
+                textElement.textContent = 'Copied!';
+
+                setTimeout(() => {
+                    buttonElement.classList.remove('success');
+                    textElement.textContent = originalText;
+                }, 2000);
+            } else {
+                // Compact button - just remove success class after delay
+                setTimeout(() => {
+                    buttonElement.classList.remove('success');
+                }, 2000);
+            }
         }
 
         // Toast notification
         showToast(`${type} copied to clipboard`, 'success');
 
     } catch (err) {
-        console.error('Failed to copy:', err);
+        console.error('Failed to copy - error details:', err);
         showToast(`Failed to copy ${type}`, 'error');
     }
 }

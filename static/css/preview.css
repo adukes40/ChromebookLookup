@@ -11,13 +11,14 @@
    - More prominent field labels
    ============================================================ */
 
-/* Dark Theme Variables - Enhanced Contrast */
+/* Dark Theme Variables - Enhanced Contrast + Brand Colors */
 :root {
     --bg-dark: #0d1117;
     --bg-card: #161b22;
     --text-primary: #f0f6fc; /* Brighter for better readability */
     --text-secondary: #8d96a0; /* Improved contrast from #7d8590 */
     --accent-color: #58a6ff;
+    --primary-color: #00A3FF;
     --shadow-color: rgba(0, 0, 0, 0.6);
     --border-color: #30363d;
     --border-color-strong: #484f58; /* New: stronger borders */
@@ -28,6 +29,15 @@
     --gradient-accent: linear-gradient(135deg, #00A3FF 0%, #0077cc 100%);
     --card-hover-shadow: 0 8px 24px rgba(0, 163, 255, 0.15);
     --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Caesar Rodney Brand Colors */
+    --brand-blue: #000098;
+    --brand-blue-dim: rgba(0, 0, 152, 0.08);
+    --brand-yellow: #fcbe14;
+    --brand-yellow-dim: rgba(252, 190, 20, 0.15);
+    --brand-yellow-glow: rgba(252, 190, 20, 0.3);
+    --gradient-brand: linear-gradient(135deg, rgba(0, 0, 152, 0.12) 0%, rgba(10, 14, 39, 1) 100%);
+    --gradient-accent-yellow: linear-gradient(135deg, #fcbe14 0%, #d4a011 100%);
 }
 
 /* Base Styles - LARGER FONTS */
@@ -76,11 +86,11 @@ h1{
 }
 
 .tab{
-    padding:18px 35px; /* INCREASED padding */
+    padding:16px 30px; /* Reduced for compact look */
     cursor:pointer;
     border:none;
     background:none;
-    font-size:1.2em; /* INCREASED from 1.1em */
+    font-size:1.05em; /* Reduced for compact look */
     color:var(--text-secondary);
     border-bottom:4px solid transparent; /* Thicker indicator */
     transition: all 0.2s ease;
@@ -216,15 +226,31 @@ h1{
 /* Card Header Section - MORE PROMINENT */
 .device-header {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    padding: 28px 28px 20px 28px; /* INCREASED padding */
+    flex-direction: column;
+    gap: 20px;
+    padding: 28px 28px 24px 28px; /* INCREASED padding */
     background: rgba(255, 255, 255, 0.04); /* STRONGER background */
     border-bottom: 2px solid var(--border-color-strong); /* THICKER border */
 }
 
+.device-header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 20px;
+}
+
+.device-header-bottom {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .device-primary-info {
-    flex: 1;
+    flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     gap: 10px; /* INCREASED from 8px */
@@ -294,9 +320,19 @@ h1{
 
 .device-status-badges {
     display: flex;
-    flex-direction: column;
-    gap: 10px;
-    align-items: flex-end;
+    gap: 12px;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.status-heading {
+    font-size: 1em;
+    font-weight: 600;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-align: center;
 }
 
 /* Status Badges - LARGER */
@@ -305,8 +341,8 @@ h1{
     border-radius: 24px;
     font-size: 0.95em; /* INCREASED from 0.85em */
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
+    text-transform: none;
+    letter-spacing: 0.3px;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -347,8 +383,43 @@ h1{
 .badge-iiq-status {
     background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
     color: white;
+}
+
+/* Battery Health Badges */
+.badge-battery-excellent {
+    background: linear-gradient(135deg, #4caf50 0%, #388e3c 100%);
+    color: white;
     font-size: 0.85em;
     padding: 8px 14px;
+}
+
+.badge-battery-good {
+    background: linear-gradient(135deg, #8bc34a 0%, #689f38 100%);
+    color: white;
+    font-size: 0.85em;
+    padding: 8px 14px;
+}
+
+.badge-battery-fair {
+    background: linear-gradient(135deg, #ffc107 0%, #ffa000 100%);
+    color: #000;
+    font-size: 0.85em;
+    padding: 8px 14px;
+}
+
+.badge-battery-warning {
+    background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+    color: white;
+    font-size: 0.85em;
+    padding: 8px 14px;
+}
+
+.badge-battery-critical {
+    background: linear-gradient(135deg, #f44336 0%, #d32f2f 100%);
+    color: white;
+    font-size: 0.85em;
+    padding: 8px 14px;
+    font-weight: bold;
 }
 
 .device-serial {
@@ -445,6 +516,17 @@ h1{
     font-style: italic;
 }
 
+.field-warning {
+    font-size: 0.9em;
+    color: #ff9800;
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: rgba(255, 152, 0, 0.1);
+    border-left: 3px solid #ff9800;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
 .field-badge {
     display: inline-block;
     padding: 4px 10px; /* INCREASED from 2px 8px */
@@ -530,7 +612,7 @@ a:hover {
 /* Hero Section - LARGER TEXT */
 .hero-section {
     background: var(--gradient-primary);
-    padding: 45px 35px; /* INCREASED */
+    padding: 12px 35px 25px 35px; /* Top padding much smaller */
     border-radius: 12px;
     margin-bottom: 24px;
     box-shadow: 0 12px 35px var(--shadow-color);
@@ -550,24 +632,25 @@ a:hover {
 }
 
 .hero-content {
-    margin-bottom: 35px;
+    margin-bottom: 20px;
 }
 
 .hero-text {
     text-align: center;
-    margin-bottom: 35px;
+    margin-bottom: 8px;
 }
 
 .hero-title {
-    font-size: 2.8em; /* INCREASED from 2.5em */
+    font-size: 2.2em; /* Reduced for more compact look */
     font-weight: 700;
     color: white;
-    margin-bottom: 12px;
+    margin-bottom: 2px;
+    margin-top: 0;
     text-shadow: 0 2px 10px rgba(0,0,0,0.3);
 }
 
 .hero-subtitle {
-    font-size: 1.35em; /* INCREASED from 1.2em */
+    font-size: 1.1em; /* Reduced for more compact look */
     color: rgba(255, 255, 255, 0.95);
     font-weight: 300;
 }
@@ -576,7 +659,7 @@ a:hover {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 24px;
-    margin-top: 35px;
+    margin-top: 15px;
 }
 
 .stat-card {
@@ -600,7 +683,7 @@ a:hover {
 }
 
 .stat-icon {
-    font-size: 2.8em; /* INCREASED */
+    font-size: 2.2em; /* Reduced for compact look */
     line-height: 1;
 }
 
@@ -609,26 +692,26 @@ a:hover {
 }
 
 .stat-value {
-    font-size: 2em; /* INCREASED from 1.8em */
+    font-size: 1.7em; /* Reduced for compact look */
     font-weight: bold;
     color: white;
     line-height: 1.2;
 }
 
 .stat-label {
-    font-size: 1em; /* INCREASED from 0.9em */
+    font-size: 0.9em; /* Reduced for compact look */
     color: rgba(255, 255, 255, 0.85);
     margin-top: 5px;
 }
 
 .quick-actions {
-    margin-top: 35px;
+    margin-top: 25px;
 }
 
 .quick-actions-title {
     color: white;
-    font-size: 1.7em; /* INCREASED from 1.5em */
-    margin-bottom: 24px;
+    font-size: 1.4em; /* Reduced for compact look */
+    margin-bottom: 18px;
     text-align: center;
     font-weight: 700;
 }
@@ -661,7 +744,7 @@ a:hover {
 }
 
 .action-icon {
-    font-size: 2.8em; /* INCREASED */
+    font-size: 2.2em; /* Reduced for compact look */
     line-height: 1;
 }
 
@@ -670,14 +753,14 @@ a:hover {
 }
 
 .action-title {
-    font-size: 1.2em; /* INCREASED from 1.1em */
+    font-size: 1.05em; /* Reduced for compact look */
     font-weight: bold;
     color: white;
     margin-bottom: 5px;
 }
 
 .action-desc {
-    font-size: 0.95em; /* INCREASED from 0.85em */
+    font-size: 0.85em; /* Reduced for compact look */
     color: rgba(255, 255, 255, 0.85);
 }
 
@@ -971,6 +1054,54 @@ a:hover {
 
 .quick-action-text {
     font-weight: 600;
+}
+
+/* Compact Quick Actions in Header */
+.quick-actions-compact {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.quick-action-btn-compact {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: linear-gradient(135deg, rgba(88, 166, 255, 0.12) 0%, rgba(88, 166, 255, 0.06) 100%);
+    border: 2px solid rgba(88, 166, 255, 0.3);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.85em;
+    cursor: pointer;
+    transition: var(--transition-smooth);
+    white-space: nowrap;
+    font-weight: 600;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.quick-action-btn-compact:hover {
+    background: linear-gradient(135deg, rgba(88, 166, 255, 0.18) 0%, rgba(88, 166, 255, 0.1) 100%);
+    border-color: var(--accent-color);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(88, 166, 255, 0.3);
+}
+
+.quick-action-btn-compact:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.quick-action-btn-compact.success {
+    background: linear-gradient(135deg, rgba(76, 175, 80, 0.2) 0%, rgba(76, 175, 80, 0.1) 100%);
+    border-color: rgba(76, 175, 80, 0.5);
+    color: #90ee90;
+}
+
+.quick-action-btn-compact svg {
+    vertical-align: middle;
 }
 
 /* ========================================
@@ -1268,5 +1399,102 @@ a:hover {
     .quick-action-btn {
         width: 100%;
         justify-content: center;
+    }
+}
+
+/* ============================================================
+   CAESAR RODNEY BRANDING ENHANCEMENTS
+   ============================================================ */
+
+/* Brand Logo in Header */
+.brand-logo {
+    height: 90px;
+    width: auto;
+    max-width: 450px;
+    margin-bottom: -35px;
+    margin-top: -25px;
+    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5));
+    transition: transform 0.3s ease, filter 0.3s ease;
+}
+
+.brand-logo:hover {
+    transform: scale(1.03);
+    filter: drop-shadow(0 4px 16px rgba(252, 190, 20, 0.4));
+}
+
+/* Hero Section with Brand Blue Overlay */
+.hero-section {
+    background: linear-gradient(135deg, 
+        var(--brand-blue-dim) 0%, 
+        rgba(26, 31, 53, 1) 50%, 
+        rgba(13, 17, 23, 1) 100%) !important;
+}
+
+/* Yellow Accents for Success States */
+.badge-active {
+    background: var(--gradient-accent-yellow) !important;
+    color: #000 !important;
+    font-weight: 700 !important;
+}
+
+/* Yellow Hover Effects for Cards */
+.action-card:hover {
+    border-color: var(--brand-yellow) !important;
+    box-shadow: 0 10px 28px var(--brand-yellow-glow) !important;
+}
+
+.stat-card:hover {
+    border-color: var(--brand-yellow) !important;
+    box-shadow: 0 8px 24px var(--brand-yellow-glow) !important;
+}
+
+.device-card:hover {
+    border-color: var(--brand-yellow) !important;
+    box-shadow: 0 8px 24px var(--brand-yellow-glow) !important;
+}
+
+/* Brand Footer */
+.brand-footer {
+    background: linear-gradient(135deg, var(--brand-blue-dim) 0%, rgba(10, 14, 39, 0.6) 100%);
+    padding: 20px 35px;
+    margin-top: 40px;
+    border-top: 2px solid var(--brand-yellow-dim);
+    border-radius: 0 0 12px 12px;
+    text-align: center;
+}
+
+.brand-footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.footer-text {
+    color: var(--brand-yellow);
+    font-weight: 600;
+    font-size: 0.95em;
+}
+
+.footer-separator {
+    color: rgba(255, 255, 255, 0.3);
+}
+
+.footer-tagline {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.9em;
+    font-style: italic;
+}
+
+/* Responsive Footer */
+@media (max-width: 768px) {
+    .brand-footer-content {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .footer-separator {
+        display: none;
     }
 }

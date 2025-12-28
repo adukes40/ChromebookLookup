@@ -4,11 +4,12 @@ Combines IncidentIQ asset data with Google Workspace device information
 """
 
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from authlib.integrations.starlette_client import OAuth
 import redis
 import json
@@ -73,12 +74,30 @@ from integrations.incidentiq import IncidentIQClient
 # Meraki integration
 from integrations.meraki import MerakiClient
 
+# Cache integration
+from cache.redis_manager import cache, CacheKeys
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI
 app = FastAPI(title="Chromebook Dashboard", version="1.0.0")
+
+# Add cache control middleware for static files
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        # Add no-cache headers for JS and CSS files
+        if request.url.path.endswith(('.js', '.css')):
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+
+        return response
+
+app.add_middleware(NoCacheMiddleware)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -362,6 +381,316 @@ async def dashboard_stats(user: dict = Depends(get_current_user), db: Session = 
         logger.error(f"Dashboard stats error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch stats: {str(e)}")
 
+@app.get("/api/dashboard/aue-expiration")
+async def dashboard_aue_expiration(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    force_refresh: bool = False
+):
+    """Get AUE expiration data grouped by year with model names"""
+    try:
+        cache_key = CacheKeys.dashboard_aue_expiration()
+        if not force_refresh:
+            cached = cache.get(cache_key)
+            if cached:
+                logger.info("AUE expiration data served from cache")
+                return cached
+
+        # Get current year
+        current_year = datetime.now().year
+
+        # Query for expired devices (before current year)
+        expired_query = text("""
+            SELECT COUNT(*)
+            FROM chromebooks
+            WHERE status = 'ACTIVE'
+            AND aue_date IS NOT NULL
+            AND aue_date <> ''
+            AND EXTRACT(YEAR FROM aue_date::date) < :current_year
+        """)
+        expired_result = db.execute(expired_query, {"current_year": current_year}).fetchone()
+        expired_count = expired_result[0] if expired_result else 0
+
+        # Query for devices by year (current year and beyond) with models and counts
+        years_query = text("""
+            SELECT
+                aue_year,
+                SUM(model_count)::integer as device_count,
+                jsonb_agg(
+                    jsonb_build_object(
+                        'model', model,
+                        'count', model_count
+                    ) ORDER BY model
+                ) as models
+            FROM (
+                SELECT
+                    EXTRACT(YEAR FROM aue_date::date)::integer as aue_year,
+                    model,
+                    COUNT(*) as model_count
+                FROM chromebooks
+                WHERE status = 'ACTIVE'
+                AND aue_date IS NOT NULL
+                AND aue_date <> ''
+                AND EXTRACT(YEAR FROM aue_date::date) >= :current_year
+                GROUP BY EXTRACT(YEAR FROM aue_date::date)::integer, model
+            ) subquery
+            GROUP BY aue_year
+            ORDER BY aue_year
+        """)
+        years_results = db.execute(years_query, {"current_year": current_year}).fetchall()
+
+        # Build year data
+        years_data = []
+        for row in years_results:
+            years_data.append({
+                "year": row[0],
+                "count": row[1],
+                "models": row[2] if row[2] else []
+            })
+
+        data = {
+            "expiredCount": expired_count,
+            "years": years_data,
+            "currentYear": current_year,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        cache.set(cache_key, data, ttl=43200)
+        logger.info(f"AUE expiration data calculated: {expired_count} expired, {len(years_data)} future years")
+
+        return data
+
+    except Exception as e:
+        logger.error(f"Dashboard AUE expiration error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch AUE data: {str(e)}")
+
+@app.get("/api/dashboard/security-alerts")
+async def dashboard_security_alerts(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    force_refresh: bool = False
+):
+    """Get security alerts: Dev mode, poor battery, pending repairs"""
+    try:
+        cache_key = CacheKeys.dashboard_security_alerts()
+        if not force_refresh:
+            cached = cache.get(cache_key)
+            if cached:
+                logger.info("Security alerts data served from cache")
+                return cached
+
+        query = text("""
+            SELECT
+                COUNT(CASE WHEN boot_mode = 'Dev' THEN 1 END) as dev_mode_count,
+                COUNT(CASE WHEN battery_health IS NOT NULL AND battery_health < 30 THEN 1 END) as poor_battery_count,
+                COUNT(CASE WHEN iiq_status IN ('In Repair', 'Pending Repair', 'Repair Needed') THEN 1 END) as pending_repairs_count,
+                COUNT(CASE
+                    WHEN boot_mode = 'Dev'
+                    OR (battery_health IS NOT NULL AND battery_health < 30)
+                    OR iiq_status IN ('In Repair', 'Pending Repair', 'Repair Needed')
+                    THEN 1
+                END) as total_alerts
+            FROM chromebooks
+            WHERE status = 'ACTIVE'
+        """)
+
+        result = db.execute(query).fetchone()
+        data = {
+            "devModeCount": result[0],
+            "poorBatteryCount": result[1],
+            "pendingRepairsCount": result[2],
+            "totalAlerts": result[3],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        cache.set(cache_key, data, ttl=43200)
+        logger.info("Security alerts data calculated and cached")
+
+        return data
+
+    except Exception as e:
+        logger.error(f"Dashboard security alerts error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch security alerts: {str(e)}")
+
+@app.post("/api/dashboard/refresh-widgets")
+async def refresh_dashboard_widgets(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manually refresh all dashboard widget caches"""
+    try:
+        cache.delete(CacheKeys.dashboard_aue_expiration())
+        cache.delete(CacheKeys.dashboard_security_alerts())
+
+        logger.info(f"Dashboard widget caches invalidated by user: {user.get('email')}")
+
+        return {
+            "success": True,
+            "message": "Dashboard widgets refreshed successfully",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Dashboard widget refresh error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to refresh widgets: {str(e)}")
+
+@app.get("/api/devices/advanced-search")
+async def advanced_device_search(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    status: str = None,
+    model: str = None,
+    location: str = None,
+    org_unit: str = None,
+    battery_min: int = None,
+    battery_max: int = None,
+    boot_mode: str = None,
+    aue_year: int = None,
+    repair_status: str = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """Advanced multi-criteria device search with pagination"""
+    try:
+        # Build dynamic WHERE clauses (use c. prefix for chromebooks table)
+        conditions = ["1=1"]  # Always true base condition
+        params = {}
+
+        if status:
+            conditions.append("c.status = :status")
+            params["status"] = status
+
+        if model:
+            conditions.append("c.model ILIKE :model")
+            params["model"] = f"%{model}%"
+
+        if location:
+            conditions.append("(c.iiq_location ILIKE :location OR c.annotated_location ILIKE :location)")
+            params["location"] = f"%{location}%"
+
+        if org_unit:
+            conditions.append("c.org_unit_path LIKE :org_unit || '%'")
+            params["org_unit"] = org_unit
+
+        if battery_min is not None:
+            conditions.append("c.battery_health >= :battery_min")
+            params["battery_min"] = battery_min
+
+        if battery_max is not None:
+            conditions.append("c.battery_health <= :battery_max")
+            params["battery_max"] = battery_max
+
+        if boot_mode:
+            conditions.append("c.boot_mode = :boot_mode")
+            params["boot_mode"] = boot_mode
+
+        if aue_year:
+            conditions.append("EXTRACT(YEAR FROM c.auto_update_expiration::date) = :aue_year")
+            params["aue_year"] = aue_year
+
+        if repair_status:
+            conditions.append("c.iiq_status = :repair_status")
+            params["repair_status"] = repair_status
+
+        # Add pagination params
+        params["limit"] = limit
+        params["offset"] = offset
+
+        where_clause = " AND ".join(conditions)
+
+        # Count total matching records
+        count_query = text(f"""
+            SELECT COUNT(*)
+            FROM chromebooks c
+            WHERE {where_clause}
+        """)
+        total_count = db.execute(count_query, params).fetchone()[0]
+
+        # Fetch paginated results with JOIN to get IIQ asset tag and student ID
+        data_query = text(f"""
+            SELECT
+                c.device_id, c.serial_number,
+                COALESCE(a.asset_tag, SPLIT_PART(c.asset_tag, ' | ', 1)) as asset_tag,
+                c.model, c.status,
+                c.annotated_user, c.iiq_owner_email, c.iiq_owner_name,
+                c.iiq_location, c.iiq_room, c.annotated_location,
+                c.org_unit_path, c.battery_health, c.boot_mode,
+                c.auto_update_expiration, c.iiq_status, c.iiq_notes,
+                c.last_sync_status, c.updated_at,
+                COALESCE(c.iiq_asset_id, a.asset_id) as iiq_asset_id,
+                c.mac_address, c.ip_address, c.wan_ip_address, c.os_version, c.last_used_date,
+                c.recent_users,
+                COALESCE(u.student_id, a.owner_student_id) as student_id,
+                COALESCE(u.student_grade, a.owner_student_grade) as student_grade,
+                u.full_name as user_full_name
+            FROM chromebooks c
+            LEFT JOIN assets a ON c.serial_number = a.serial_number
+            LEFT JOIN users u ON LOWER(COALESCE(c.iiq_owner_email, c.annotated_user)) = LOWER(u.email)
+            WHERE {where_clause}
+            ORDER BY COALESCE(a.asset_tag, SPLIT_PART(c.asset_tag, ' | ', 1)) NULLS LAST, c.serial_number
+            LIMIT :limit OFFSET :offset
+        """)
+
+        results = db.execute(data_query, params).fetchall()
+
+        devices = []
+        for row in results:
+            devices.append({
+                "device_id": row[0],
+                "serial_number": row[1],
+                "asset_tag": row[2],
+                "model": row[3],
+                "status": row[4],
+                "annotated_user": row[5],
+                "iiq_owner_email": row[6],
+                "iiq_owner_name": row[7],
+                "iiq_location": row[8],
+                "iiq_room": row[9],
+                "annotated_location": row[10],
+                "org_unit_path": row[11],
+                "battery_health": row[12],
+                "boot_mode": row[13],
+                "auto_update_expiration": row[14],
+                "iiq_status": row[15],
+                "iiq_notes": row[16],
+                "last_sync_status": row[17],
+                "updated_at": row[18].isoformat() if row[18] else None,
+                "iiq_asset_id": row[19],
+                "mac_address": row[20],
+                "ip_address": row[21],
+                "wan_ip_address": row[22],
+                "os_version": row[23],
+                "last_used_date": row[24].isoformat() if row[24] else None,
+                "recent_users": row[25],
+                "iiqOwnerStudentId": row[26],
+                "studentGrade": row[27],
+                "userFullName": row[28]
+            })
+
+        logger.info(f"Advanced search: {total_count} devices matched, returning {len(devices)} (offset={offset})")
+
+        return {
+            "devices": devices,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "filters_applied": {
+                "status": status,
+                "model": model,
+                "location": location,
+                "org_unit": org_unit,
+                "battery_min": battery_min,
+                "battery_max": battery_max,
+                "boot_mode": boot_mode,
+                "aue_year": aue_year,
+                "repair_status": repair_status
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Advanced search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Advanced search failed: {str(e)}")
+
 @app.get("/api/combined/search")
 async def combined_search(user: dict = Depends(get_current_user), query: str = "", db: Session = Depends(get_db)):
     """IIQ-first search - real-time data from IIQ API, merged with cached Google data for chromebooks"""
@@ -429,6 +758,7 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
                 'iiqStatus': iiq_asset.get('status', 'N/A'),
                 'iiqOwnerEmail': iiq_asset.get('assignedUserEmail', ''),
                 'iiqOwnerName': iiq_asset.get('assignedUser', 'Not assigned'),
+                'iiqOwnerStudentId': iiq_asset.get('assignedUserStudentId', ''),
                 'location': iiq_asset.get('location', 'N/A'),
                 'source': 'iiq'
             }
@@ -497,176 +827,65 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
 
 @app.get("/api/user/search")
 async def user_search(user: dict = Depends(get_current_user), query: str = "", db: Session = Depends(get_db)):
-    """Enhanced user search using IIQ API - supports first name, last name, email, ID number"""
+    """
+    Fast unified user search from database (no API calls).
+    Supports email, name, and student ID queries. <200ms latency.
+    Returns merged Google + IIQ user data with fee balances.
+    """
     try:
         if not query:
             return {"users": [], "count": 0}
 
-        # Initialize IIQ client
-        iiq_client = IncidentIQClient(INCIDENTIQ_SITE_ID, INCIDENTIQ_API_TOKEN, INCIDENTIQ_PRODUCT_ID)
+        # Database-only query with email, name, and student ID matching
+        search_pattern = f"%{query.lower()}%"
+        search_query = text("""
+            SELECT
+                u.id, u.user_id, u.iiq_user_id, u.email, u.full_name, u.first_name, u.last_name,
+                u.org_unit_path, u.is_admin, u.is_suspended,
+                u.username, u.is_active_iiq, u.iiq_location, u.iiq_role_name,
+                u.student_id, u.student_grade, u.total_fee_balance, u.has_outstanding_fees,
+                u.data_source, u.is_merged,
+                COUNT(DISTINCT c.device_id) as device_count
+            FROM users u
+            LEFT JOIN chromebooks c ON LOWER(c.iiq_owner_email) = LOWER(u.email)
+            WHERE LOWER(u.email) LIKE :query
+               OR LOWER(u.full_name) LIKE :query
+               OR u.student_id LIKE :query
+            GROUP BY u.id
+            ORDER BY
+                CASE WHEN LOWER(u.email) LIKE :exact_query THEN 0 ELSE 1 END,
+                u.full_name ASC
+            LIMIT 20
+        """)
 
-        # IIQ-FIRST: Search users via IIQ API (supports first/last name, email, ID)
-        iiq_users = iiq_client.search_and_extract_users(query, limit=20)
-
-        logger.info(f"IIQ user search for '{query}' returned {len(iiq_users)} users")
+        results = db.execute(search_query, {
+            "query": search_pattern,
+            "exact_query": f"%{query.lower()}%"
+        }).fetchall()
 
         users_list = []
-        for iiq_user in iiq_users:
-            email = iiq_user.get('email', '').lower()
-            user_id = iiq_user.get('userId', '')
+        for row in results:
+            user_record = {
+                'userId': row.user_id,
+                'email': row.email,
+                'fullName': row.full_name or '',
+                'firstName': row.first_name or '',
+                'lastName': row.last_name or '',
+                'username': row.username,
+                'isActive': row.is_active_iiq if row.iiq_user_id else not row.is_suspended,
+                'studentId': row.student_id,
+                'grade': row.student_grade or 'N/A',
+                'location': row.iiq_location or 'N/A',
+                'googleOrgUnit': row.org_unit_path or 'N/A',
+                'feeBalance': float(row.total_fee_balance) if row.total_fee_balance else 0.0,
+                'hasOutstandingFees': row.has_outstanding_fees or False,
+                'deviceCount': row.device_count or 0,
+                'dataSource': row.data_source,
+                'isMerged': row.is_merged
+            }
+            users_list.append(user_record)
 
-            # Skip if no user ID (can't fetch assignments without it)
-            if not user_id:
-                continue
-
-            # REAL-TIME: Fetch IIQ assigned devices from IIQ API
-            iiq_assigned_assets = iiq_client.get_user_assets(user_id)
-            logger.info(f"User {email} has {len(iiq_assigned_assets)} assigned devices in IIQ")
-
-            # Get Google recent logins (from recent_users JSON) - limit to 5 most recent
-            google_recent_query = text("""
-                SELECT
-                    device_id,
-                    asset_tag,
-                    serial_number,
-                    model,
-                    status,
-                    iiq_location,
-                    iiq_room,
-                    iiq_status,
-                    iiq_asset_id,
-                    mac_address,
-                    ip_address,
-                    wan_ip_address,
-                    os_version,
-                    battery_health,
-                    last_used_date,
-                    recent_users
-                FROM chromebooks
-                WHERE recent_users::text LIKE :email_pattern
-                ORDER BY last_used_date DESC NULLS LAST
-                LIMIT 5
-            """)
-
-            google_devices_results = db.execute(google_recent_query, {"email_pattern": f"%{email}%"}).fetchall()
-
-            # Process IIQ assigned devices - merge with Google data
-            iiq_assigned_devices = []
-            for asset in iiq_assigned_assets:
-                # Extract basic IIQ asset info
-                serial = asset.get('SerialNumber', '').upper()
-                asset_tag = asset.get('AssetTag', 'N/A')
-                asset_id = asset.get('AssetId', '')
-
-                # Extract model
-                model_obj = asset.get('Model', {})
-                model_name = model_obj.get('Name', 'N/A') if isinstance(model_obj, dict) else str(model_obj)
-
-                # Extract category (device type)
-                category = model_obj.get('Category', {}) if isinstance(model_obj, dict) else {}
-                device_type = category.get('Name', 'Unknown') if isinstance(category, dict) else 'Unknown'
-
-                # Extract location
-                location_obj = asset.get('Location', {})
-                location = location_obj.get('Name', 'N/A') if isinstance(location_obj, dict) else 'N/A'
-                room = asset.get('LocationRoomId', 'N/A')
-
-                # Extract status
-                status_obj = asset.get('Status', {})
-                iiq_status = status_obj.get('Name', 'N/A') if isinstance(status_obj, dict) else 'N/A'
-
-                # Try to find matching Google data by serial number
-                google_data_query = text("""
-                    SELECT device_id, mac_address, ip_address, wan_ip_address,
-                           os_version, battery_health, last_used_date, status
-                    FROM chromebooks
-                    WHERE UPPER(serial_number) = :serial
-                    LIMIT 1
-                """)
-                google_match = db.execute(google_data_query, {"serial": serial}).fetchone()
-
-                # Build device info with IIQ as source of truth, enhanced with Google data
-                device_info = {
-                    'deviceId': google_match[0] if google_match else '',
-                    'assetTag': asset_tag,
-                    'serialNumber': serial or 'N/A',
-                    'model': model_name,
-                    'googleStatus': google_match[7] if google_match else 'N/A',
-                    'location': location,
-                    'room': room,
-                    'iiqStatus': iiq_status,
-                    'iiqAssetId': asset_id,
-                    'macAddress': format_mac_address(google_match[1]) if (google_match and google_match[1]) else 'N/A',
-                    'ipAddress': google_match[2] if google_match else 'N/A',
-                    'wanIpAddress': google_match[3] if google_match else 'N/A',
-                    'osVersion': google_match[4] if google_match else 'N/A',
-                    'batteryHealth': google_match[5] if google_match else None,
-                    'lastSync': google_match[6].isoformat() if (google_match and google_match[6]) else 'N/A',
-                    'deviceType': device_type,
-                    'source': 'iiq_assigned'
-                }
-                iiq_assigned_devices.append(device_info)
-
-            # Process Google recent logins
-            google_recent_devices = []
-            for dev in google_devices_results:
-                # Skip if already in IIQ assigned list
-                if dev[2] in [d['serialNumber'] for d in iiq_assigned_devices]:
-                    continue
-
-                device_info = {
-                    'deviceId': dev[0] or '',
-                    'assetTag': dev[1] or 'N/A',
-                    'serialNumber': dev[2] or 'N/A',
-                    'model': dev[3] or 'N/A',
-                    'googleStatus': dev[4] or 'N/A',
-                    'location': dev[5] or 'N/A',
-                    'room': dev[6] or 'N/A',
-                    'iiqStatus': dev[7] or 'N/A',
-                    'iiqAssetId': dev[8] or '',
-                    'macAddress': format_mac_address(dev[9]) if dev[9] else 'N/A',
-                    'ipAddress': dev[10] or 'N/A',
-                    'wanIpAddress': dev[11] or 'N/A',
-                    'osVersion': dev[12] or 'N/A',
-                    'batteryHealth': dev[13],
-                    'lastSync': dev[14].isoformat() if dev[14] else 'N/A',
-                    'deviceType': 'Chromebooks',
-                    'source': 'google_recent'
-                }
-                google_recent_devices.append(device_info)
-
-            # Get Google org unit from database if available
-            google_org_unit = 'N/A'
-            try:
-                google_user_query = text("""
-                    SELECT org_unit_path FROM users WHERE LOWER(email) = LOWER(:email) LIMIT 1
-                """)
-                google_user = db.execute(google_user_query, {"email": email}).fetchone()
-                if google_user:
-                    google_org_unit = google_user[0] or 'N/A'
-            except:
-                pass
-
-            users_list.append({
-                'userId': user_id,
-                'email': email,
-                'fullName': iiq_user.get('fullName', 'N/A'),
-                'firstName': iiq_user.get('firstName', ''),
-                'lastName': iiq_user.get('lastName', ''),
-                'username': iiq_user.get('username', 'N/A'),
-                'isActive': iiq_user.get('isActive', True),
-                'isStudent': iiq_user.get('isStudent', False),
-                'studentId': iiq_user.get('studentId'),
-                'location': iiq_user.get('location', 'N/A'),
-                'grade': iiq_user.get('grade', 'N/A'),
-                'googleOrgUnit': google_org_unit,
-                'iiqAssignedDevices': iiq_assigned_devices,
-                'iiqAssignedCount': len(iiq_assigned_devices),
-                'googleRecentDevices': google_recent_devices,
-                'googleRecentCount': len(google_recent_devices),
-                'totalDeviceCount': len(iiq_assigned_devices) + len(google_recent_devices),
-                'source': 'iiq'
-            })
+        logger.info(f"User search for '{query}' returned {len(users_list)} results from database")
 
         return {
             "users": users_list,
@@ -687,7 +906,28 @@ async def root(request: Request, user: dict = Depends(get_current_user)):
 @app.get("/preview")
 async def preview(request: Request, user: dict = Depends(get_current_user)):
     """Design Preview - Test new card design before applying to production"""
-    return templates.TemplateResponse("preview.html", {"request": request})
+    import time
+    response = templates.TemplateResponse("preview.html", {
+        "request": request,
+        "cache_bust": int(time.time())
+    })
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
+@app.get("/preview-test-dec25")
+async def preview_test(request: Request, user: dict = Depends(get_current_user)):
+    """TEMPORARY: Test endpoint to bypass ALL caching"""
+    import time
+    response = templates.TemplateResponse("preview.html", {
+        "request": request,
+        "cache_bust": int(time.time())
+    })
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 @app.get("/dashboard")
 async def dashboard(request: Request, user: dict = Depends(get_current_user)):

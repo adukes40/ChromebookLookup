@@ -170,6 +170,7 @@ function switchTab(t){
     document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
     document.getElementById(t+'Tab').classList.add('active');
 }
+
 async function searchDevices(){
     const q=document.getElementById('searchInput').value.trim();
     if(!q){alert('Enter search term');return}
@@ -188,207 +189,256 @@ async function searchDevices(){
         showToast(`Search failed: ${e.message}`, 'error');
     }
 }
+
+// ============================================================
+// ENHANCED DISPLAY RESULTS - PREVIEW VERSION
+// ============================================================
+
 function displayResults(devices) {
     const c = document.getElementById('resultsContainer');
+
     if (!devices || devices.length === 0) {
         c.innerHTML = '<div class="no-results">No devices found</div>';
         return;
     }
 
-    let h = '';
-    devices.forEach(d => {
-        const st = d.googleStatus || 'N/A';
-        const bc = st === 'ACTIVE' ? 'badge-active' : 'badge-disabled';
-        const dt = d.deviceType || 'Unknown';
-        const isChrome = dt === 'Chromebooks';
-        const typeClass = isChrome ? 'type-chromebook' : 'type-ipad';
-        const statusClass = st === 'ACTIVE' ? 'status-active' : 'status-disabled';
-        const typeIcon = isChrome ? '💻' : '📱';
+    let html = '';
+
+    devices.forEach(device => {
+        // Determine device characteristics
+        const status = device.googleStatus || 'N/A';
+        const badgeClass = status === 'ACTIVE' ? 'badge-active' : 'badge-disabled';
+        const deviceType = device.deviceType || 'Unknown';
+        const isChromebook = deviceType === 'Chromebooks';
+        const typeClass = isChromebook ? 'type-chromebook' : 'type-ipad';
+        const statusClass = status === 'ACTIVE' ? 'status-active' : 'status-disabled';
+        const typeIcon = isChromebook ? '💻' : '📱';
 
         // URLs
-        const iiqLink = `https://crsd.incidentiq.com/agent/assets/${d.assetId || ''}?asset-details-tab=details`;
-        const googleLink = `https://admin.google.com/ac/chrome/devices/${d.deviceId || d.serialNumber}?journey=217`;
+        const iiqLink = `https://crsd.incidentiq.com/agent/assets/${device.assetId || ''}?asset-details-tab=details`;
+        const googleLink = `https://admin.google.com/ac/chrome/devices/${device.deviceId || device.serialNumber}?journey=217`;
 
-        // User info with source badges
-        const userEmail = d.iiqOwnerEmail || d.assignedUser || 'Not assigned';
-        const userSource = d.iiqOwnerEmail ?
-            '<span class="field-badge badge-iiq">IIQ Official</span>' :
-            (d.assignedUser && d.assignedUser !== 'Not assigned' ? '<span class="field-badge badge-google">Google</span>' : '');
-        const userName = d.iiqOwnerName && d.iiqOwnerEmail ?
-            `<div class="field-value-secondary">${d.iiqOwnerName}</div>` : '';
+        // User information
+        const userEmail = device.iiqOwnerEmail || device.assignedUser || 'Not assigned';
+        const hasIiqUser = !!device.iiqOwnerEmail;
+        const hasGoogleUser = device.assignedUser && device.assignedUser !== 'Not assigned';
+        const userSource = hasIiqUser
+            ? '<span class="field-badge badge-iiq">IIQ Official</span>'
+            : (hasGoogleUser ? '<span class="field-badge badge-google">Google</span>' : '');
+        const userName = device.iiqOwnerName && device.iiqOwnerEmail
+            ? `<div class="field-value-secondary">${escapeHtml(device.iiqOwnerName)}</div>`
+            : '';
 
-        // Recent users section
-        let recentUsersHtml = '';
-        if (d.recentUsers && d.recentUsers.length > 0) {
-            recentUsersHtml = `
-                <div class="recent-users-section">
-                    <div class="section-header">
-                        <span>📋</span>
-                        <span>Recent Users</span>
-                    </div>
-                    <div>${d.recentUsers.map(u => `<span class="user-chip">👤 ${u}</span>`).join('')}</div>
-                </div>
-            `;
-        }
-
-        // Build card HTML
-        h += `
+        // Build card
+        html += `
             <div class="device-card ${typeClass} ${statusClass}">
-                <!-- Card Header -->
-                <div class="device-header">
-                    <div class="device-primary-info">
-                        <div class="device-asset-tag">
-                            <a href="${iiqLink}" target="_blank" title="View in IncidentIQ">
-                                <span class="asset-icon">🏷️</span>
-                                <span>${d.assetTag}</span>
-                            </a>
-                        </div>
-                        <div class="device-subtitle">Serial: ${d.serialNumber}</div>
-                        <div class="device-type-badge ${typeClass}">
-                            <span>${typeIcon}</span>
-                            <span>${dt}</span>
-                        </div>
-                    </div>
-                    <div class="device-status-badges">
-                        <span class="device-badge ${bc}">
-                            <span class="status-indicator"></span>
-                            <span>${st}</span>
-                        </span>
-                        ${d.iiqStatus ? `<span class="device-badge badge-iiq-status">IIQ: ${d.iiqStatus}</span>` : ''}
-                    </div>
-                </div>
-
-                <!-- Card Content -->
-                <div class="device-content">
-                    <div class="device-grid">
-                        <!-- Priority 1 Fields -->
-                        <div class="device-field">
-                            <div class="field-label">
-                                <span class="field-icon">🔢</span>
-                                <span>Serial Number</span>
-                            </div>
-                            <div class="field-value">
-                                ${isChrome ? `<a href="${googleLink}" target="_blank" title="View in Google Admin Console">${d.serialNumber}</a>` : d.serialNumber}
-                            </div>
-                        </div>
-
-                        <div class="device-field">
-                            <div class="field-label">
-                                <span class="field-icon">👤</span>
-                                <span>Assigned User</span>
-                                ${userSource}
-                            </div>
-                            <div class="field-value">
-                                ${userEmail}
-                                ${userName}
-                            </div>
-                        </div>
-
-                        <!-- Priority 2 Fields -->
-                        <div class="device-field">
-                            <div class="field-label">
-                                <span class="field-icon">💻</span>
-                                <span>Model</span>
-                            </div>
-                            <div class="field-value">${d.model || 'N/A'}</div>
-                        </div>
-
-                        <div class="device-field">
-                            <div class="field-label">
-                                <span class="field-icon">📍</span>
-                                <span>Location</span>
-                            </div>
-                            <div class="field-value">${d.location || 'N/A'}</div>
-                        </div>
-
-                        <div class="device-field">
-                            <div class="field-label">
-                                <span class="field-icon">🌐</span>
-                                <span>MAC Address</span>
-                            </div>
-                            <div class="field-value">${d.macAddress || 'N/A'}</div>
-                        </div>
-
-                        <div class="device-field">
-                            <div class="field-label">
-                                <span class="field-icon">🌍</span>
-                                <span>IP Address</span>
-                            </div>
-                            <div class="field-value">${d.ipAddress || 'N/A'}</div>
-                        </div>
-
-                        <div class="device-field">
-                            <div class="field-label">
-                                <span class="field-icon">💿</span>
-                                <span>OS Version</span>
-                            </div>
-                            <div class="field-value">${d.osVersion || 'N/A'}</div>
-                        </div>
-
-                        <!-- Priority 3 Fields (Google/Chromebook specific) -->
-                        ${isChrome ? `
-                            <div class="device-field">
-                                <div class="field-label">
-                                    <span class="field-icon">🔄</span>
-                                    <span>Last Sync</span>
-                                </div>
-                                <div class="field-value">${fmt(d.lastSync)}</div>
-                            </div>
-
-                            <div class="device-field">
-                                <div class="field-label">
-                                    <span class="field-icon">👤</span>
-                                    <span>Last Known User</span>
-                                </div>
-                                <div class="field-value">${d.lastKnownUser || 'N/A'}</div>
-                            </div>
-
-                            <div class="device-field">
-                                <div class="field-label">
-                                    <span class="field-icon">📁</span>
-                                    <span>Org Unit Path</span>
-                                </div>
-                                <div class="field-value">${d.orgUnitPath || 'N/A'}</div>
-                            </div>
-                        ` : ''}
-
-                        <!-- Meraki Info -->
-                        ${d.merakiApName ? `
-                            <div class="device-field">
-                                <div class="field-label">
-                                    <span class="field-icon">📡</span>
-                                    <span>Last Known AP</span>
-                                </div>
-                                <div class="field-value">
-                                    ${d.merakiApName}
-                                    ${d.merakiNetwork ? `<div class="field-value-secondary">${d.merakiNetwork}</div>` : ''}
-                                </div>
-                            </div>
-                        ` : ''}
-
-                        ${d.merakiLastSeen ? `
-                            <div class="device-field">
-                                <div class="field-label">
-                                    <span class="field-icon">🕐</span>
-                                    <span>Meraki Last Seen</span>
-                                </div>
-                                <div class="field-value">
-                                    ${fmt(d.merakiLastSeen)}
-                                    ${d.merakiNote ? `<div class="field-value-secondary" style="color: ${d.merakiNewer ? 'var(--success-color)' : 'var(--warning-color)'}">${d.merakiNote}</div>` : ''}
-                                </div>
-                            </div>
-                        ` : ''}
-                    </div>
-
-                    ${recentUsersHtml}
-                    ${generateQuickActionsPanel(d)}
-                </div>
+                ${generateCardHeader(device, isChromebook, typeIcon, badgeClass, status, iiqLink)}
+                ${generateCardContent(device, isChromebook, googleLink, userEmail, userSource, userName)}
             </div>
         `;
     });
 
-    c.innerHTML = h;
+    c.innerHTML = html;
 }
+
+function generateCardHeader(device, isChromebook, typeIcon, badgeClass, status, iiqLink) {
+    return `
+        <div class="device-header">
+            <div class="device-primary-info">
+                <div class="device-asset-tag">
+                    <a href="${iiqLink}" target="_blank" title="View in IncidentIQ">
+                        <span class="asset-icon">🏷️</span>
+                        <span>${escapeHtml(device.assetTag)}</span>
+                    </a>
+                </div>
+                <div class="device-subtitle">Serial: ${escapeHtml(device.serialNumber)}</div>
+            </div>
+            <div class="device-status-badges">
+                <span class="device-badge ${badgeClass}">
+                    <span class="status-indicator"></span>
+                    <span>${status}</span>
+                </span>
+                ${device.iiqStatus ? `<span class="device-badge badge-iiq-status">IIQ: ${escapeHtml(device.iiqStatus)}</span>` : ''}
+            </div>
+        </div>
+    `;
+}
+
+function generateCardContent(device, isChromebook, googleLink, userEmail, userSource, userName) {
+    return `
+        <div class="device-content">
+            <div class="device-grid">
+                ${generatePriorityFields(device, isChromebook, googleLink, userEmail, userSource, userName)}
+                ${isChromebook ? generateChromebookFields(device) : ''}
+                ${generateMerakiFields(device)}
+            </div>
+            ${generateRecentUsers(device)}
+            ${generateQuickActionsPanel(device)}
+        </div>
+    `;
+}
+
+function generatePriorityFields(device, isChromebook, googleLink, userEmail, userSource, userName) {
+    return `
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">🔢</span>
+                <span>Serial Number</span>
+            </div>
+            <div class="field-value">
+                ${isChromebook
+                    ? `<a href="${googleLink}" target="_blank" title="View in Google Admin Console">${escapeHtml(device.serialNumber)}</a>`
+                    : escapeHtml(device.serialNumber)}
+            </div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">👤</span>
+                <span>Assigned User</span>
+                ${userSource}
+            </div>
+            <div class="field-value">
+                ${escapeHtml(userEmail)}
+                ${userName}
+            </div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">💻</span>
+                <span>Model</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.model || 'N/A')}</div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">📍</span>
+                <span>Location</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.location || 'N/A')}</div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">🌐</span>
+                <span>MAC Address</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.macAddress || 'N/A')}</div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">🌍</span>
+                <span>LAN IP</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.ipAddress || 'N/A')}</div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">🌐</span>
+                <span>WAN IP</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.wanIpAddress || 'N/A')}</div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">💿</span>
+                <span>OS Version</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.osVersion || 'N/A')}</div>
+        </div>
+    `;
+}
+
+function generateChromebookFields(device) {
+    return `
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">🔄</span>
+                <span>Last Sync</span>
+            </div>
+            <div class="field-value">${fmt(device.lastSync)}</div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">👤</span>
+                <span>Last Known User</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.lastKnownUser || 'N/A')}</div>
+        </div>
+
+        <div class="device-field">
+            <div class="field-label">
+                <span class="field-icon">📁</span>
+                <span>Org Unit Path</span>
+            </div>
+            <div class="field-value">${escapeHtml(device.orgUnitPath || 'N/A')}</div>
+        </div>
+    `;
+}
+
+function generateMerakiFields(device) {
+    let merakiHtml = '';
+
+    if (device.merakiApName) {
+        merakiHtml += `
+            <div class="device-field">
+                <div class="field-label">
+                    <span class="field-icon">📡</span>
+                    <span>Last Known AP</span>
+                </div>
+                <div class="field-value">
+                    ${escapeHtml(device.merakiApName)}
+                    ${device.merakiNetwork ? `<div class="field-value-secondary">${escapeHtml(device.merakiNetwork)}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    if (device.merakiLastSeen) {
+        const noteColor = device.merakiNewer ? 'var(--success-color)' : 'var(--warning-color)';
+        merakiHtml += `
+            <div class="device-field">
+                <div class="field-label">
+                    <span class="field-icon">🕐</span>
+                    <span>Meraki Last Seen</span>
+                </div>
+                <div class="field-value">
+                    ${fmt(device.merakiLastSeen)}
+                    ${device.merakiNote ? `<div class="field-value-secondary" style="color: ${noteColor}">${escapeHtml(device.merakiNote)}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    return merakiHtml;
+}
+
+function generateRecentUsers(device) {
+    if (!device.recentUsers || device.recentUsers.length === 0) {
+        return '';
+    }
+
+    return `
+        <div class="recent-users-section">
+            <div class="section-header">
+                <span>📋</span>
+                <span>Recent Users</span>
+            </div>
+            <div>
+                ${device.recentUsers.map(user =>
+                    `<span class="user-chip">👤 ${escapeHtml(user)}</span>`
+                ).join('')}
+            </div>
+        </div>
+    `;
+}
+
 function clearSearch(){document.getElementById('searchInput').value='';document.getElementById('searchInfo').innerHTML='';document.getElementById('resultsContainer').innerHTML='<div class="no-results">Enter search term</div>'}
 function fmt(d){if(!d||d==='N/A')return'N/A';try{return new Date(d).toLocaleString()}catch{return d}}
 
@@ -410,34 +460,264 @@ async function searchUsers(){
         showToast(`User search failed: ${e.message}`, 'error');
     }
 }
-function displayUserResults(users){
-const c=document.getElementById('userResultsContainer');
-if(!users||users.length===0){c.innerHTML='<div class="no-results">No users found</div>';return}
-let h='';
-users.forEach(u=>{
-const status=u.isActive?'ACTIVE':'INACTIVE';
-const bc=u.isActive?'badge-active':'badge-disabled';
-let devices='';
-if(u.assignedDevices&&u.assignedDevices.length>0){
-devices+=`<div style="margin-top:15px;padding-top:15px;border-top:1px solid #ddd"><div class="field-label">📦 ASSIGNED DEVICES (${u.assignedCount})</div><div style="margin-top:8px">`;
-u.assignedDevices.forEach(d=>{
-const aLink=d.assetTag!=='N/A'?`<a href="javascript:void(0)" onclick="searchDeviceFromUser('${d.assetTag}')" style="color:#1976d2;text-decoration:underline">${d.assetTag}</a>`:d.assetTag;
-devices+=`<div style="background:#e8f5e9;padding:8px;margin:4px 0;border-radius:4px;font-size:0.9em"><strong>Asset:</strong> ${aLink} | <strong>Serial:</strong> ${d.serialNumber} | <strong>Model:</strong> ${d.model} | <strong>Type:</strong> ${d.deviceType}</div>`;
-});
-devices+=`</div></div>`;
+
+function displayUserResults(users) {
+    const container = document.getElementById('userResultsContainer');
+    if (!users || users.length === 0) {
+        container.innerHTML = '<div class="no-results">No users found</div>';
+        return;
+    }
+
+    let html = '';
+    users.forEach((u, userIndex) => {
+        const status = u.isActive ? 'ACTIVE' : 'INACTIVE';
+        const badgeClass = u.isActive ? 'badge-active' : 'badge-disabled';
+        const userId = u.userId || '';
+
+        // Generate IIQ and Google links
+        const googleAdminLink = userId ? `https://admin.google.com/ac/users/${userId}` : '#';
+        // IIQ doesn't have a direct user URL, so we'll search for the user
+        const iiqSearchLink = `https://crsd.incidentiq.com/agent/search?query=${encodeURIComponent(u.email)}`;
+
+        html += `
+            <div class="device-card user-card">
+                <!-- User Header -->
+                <div class="device-header">
+                    <div class="device-primary-info">
+                        <div class="device-asset-tag">
+                            <span class="asset-icon">👤</span>
+                            <span>${escapeHtml(u.fullName)}${u.isStudent && u.studentId ? ` <span style="color: rgba(255,255,255,0.6); font-weight: 400;">(ID: ${escapeHtml(u.studentId)})</span>` : ''}</span>
+                        </div>
+                        <div class="device-subtitle">${escapeHtml(u.email)}</div>
+                    </div>
+                    <div class="device-status-badges">
+                        <span class="device-badge ${badgeClass}">
+                            <span class="status-indicator"></span>
+                            <span>${status}</span>
+                        </span>
+                        <span class="device-badge badge-iiq" style="background: linear-gradient(135deg, #00A3FF 0%, #0077cc 100%); border: none;">
+                            <span>📊 IIQ</span>
+                        </span>
+                    </div>
+                </div>
+
+                <!-- User Info Grid -->
+                <div class="device-content">
+                    <div class="device-grid">
+                        <div class="device-field">
+                            <div class="field-label">
+                                <span class="field-icon">📁</span>
+                                <span>Org Unit</span>
+                            </div>
+                            <div class="field-value">${escapeHtml(u.googleOrgUnit || 'N/A')}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label">
+                                <span class="field-icon">💻</span>
+                                <span>Total Devices</span>
+                            </div>
+                            <div class="field-value">${u.totalDeviceCount || 0}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label">
+                                <span class="field-icon">📦</span>
+                                <span>IIQ Assigned</span>
+                            </div>
+                            <div class="field-value">${u.iiqAssignedCount || 0}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label">
+                                <span class="field-icon">🔐</span>
+                                <span>Recent Logins</span>
+                            </div>
+                            <div class="field-value">${u.googleRecentCount || 0}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label">
+                                <span class="field-icon">🏫</span>
+                                <span>Location</span>
+                            </div>
+                            <div class="field-value">${escapeHtml(u.location || 'N/A')}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label">
+                                <span class="field-icon">🎓</span>
+                                <span>Grade</span>
+                            </div>
+                            <div class="field-value">${escapeHtml(u.grade || 'N/A')}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label">
+                                <span class="field-icon">🆔</span>
+                                <span>Username</span>
+                            </div>
+                            <div class="field-value">${escapeHtml(u.username || 'N/A')}</div>
+                        </div>
+                    </div>
+
+                    <!-- User Quick Actions -->
+                    <div class="quick-actions-panel">
+                        <div class="quick-actions-header">⚡ Quick Actions</div>
+                        <div class="quick-actions-buttons">
+                            <button class="quick-action-btn" onclick="window.open('${googleAdminLink}', '_blank')" ${!userId ? 'disabled' : ''}>
+                                <span class="quick-action-icon">⚙️</span>
+                                <span class="quick-action-text">View in Google</span>
+                            </button>
+                            <button class="quick-action-btn" onclick="window.open('${iiqSearchLink}', '_blank')">
+                                <span class="quick-action-icon">📊</span>
+                                <span class="quick-action-text">Search in IIQ</span>
+                            </button>
+                            <button class="quick-action-btn" onclick="copyToClipboard('Email', '${escapeHtml(u.email)}', this)">
+                                <span class="quick-action-icon">📋</span>
+                                <span class="quick-action-text">Copy Email</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- IIQ Assigned Devices -->
+                    ${generateUserDeviceSection(u.iiqAssignedDevices, 'IIQ Assigned Devices', '📦', 'iiq', userIndex)}
+
+                    <!-- Google Recent Logins -->
+                    ${generateUserDeviceSection(u.googleRecentDevices, 'Recent Logins (Last 5, Most Recent First)', '🔐', 'google', userIndex)}
+                </div>
+            </div>
+        `;
+    });
+
+    container.innerHTML = html;
 }
-if(u.recentDevices&&u.recentDevices.length>0){
-devices+=`<div style="margin-top:15px;padding-top:15px;border-top:1px solid #ddd"><div class="field-label">💻 RECENT CHROMEBOOKS (${u.deviceCount})</div><div style="margin-top:8px">`;
-u.recentDevices.forEach(d=>{
-const aLink=d.assetTag!=='N/A'?`<a href="javascript:void(0)" onclick="searchDeviceFromUser('${d.assetTag}')" style="color:#1976d2;text-decoration:underline">${d.assetTag}</a>`:d.assetTag;
-devices+=`<div style="background:#f0f0f0;padding:8px;margin:4px 0;border-radius:4px;font-size:0.9em"><strong>Asset:</strong> ${aLink} | <strong>Serial:</strong> ${d.serialNumber} | <strong>Model:</strong> ${d.model}</div>`;
-});
-devices+=`</div></div>`;
+
+function generateUserDeviceSection(devices, title, icon, type, userIndex) {
+    if (!devices || devices.length === 0) {
+        return '';
+    }
+
+    const sectionId = `user-${userIndex}-${type}-devices`;
+
+    let html = `
+        <div class="user-devices-section">
+            <div class="user-devices-header">
+                <span class="field-icon">${icon}</span>
+                <span>${title} (${devices.length})</span>
+            </div>
+            <div class="user-devices-list">
+    `;
+
+    devices.forEach((device, deviceIndex) => {
+        const deviceId = `${sectionId}-${deviceIndex}`;
+        const googleLink = device.deviceId ? `https://admin.google.com/ac/chrome/devices/${device.deviceId}?journey=217` : '#';
+        const iiqLink = device.iiqAssetId ? `https://crsd.incidentiq.com/agent/assets/${device.iiqAssetId}?asset-details-tab=details` : '#';
+
+        html += `
+            <div class="user-device-item">
+                <div class="user-device-summary" onclick="toggleDeviceDetails('${deviceId}')">
+                    <div class="user-device-info">
+                        <span class="user-device-asset">${escapeHtml(device.assetTag)}</span>
+                        <span class="user-device-serial">SN: ${escapeHtml(device.serialNumber)}</span>
+                        <span class="user-device-model">${escapeHtml(device.model)}</span>
+                    </div>
+                    <div class="user-device-expand">
+                        <span id="${deviceId}-icon">▶</span>
+                    </div>
+                </div>
+
+                <div id="${deviceId}-details" class="user-device-details" style="display: none;">
+                    <div class="device-grid" style="margin-top: 12px;">
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">📊</span><span>Status</span></div>
+                            <div class="field-value">${escapeHtml(device.googleStatus)}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">📍</span><span>IIQ Status</span></div>
+                            <div class="field-value">${escapeHtml(device.iiqStatus)}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">📍</span><span>Location</span></div>
+                            <div class="field-value">${escapeHtml(device.location || 'N/A')}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">🚪</span><span>Room</span></div>
+                            <div class="field-value">${escapeHtml(device.room || 'N/A')}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">🌐</span><span>MAC</span></div>
+                            <div class="field-value">${escapeHtml(device.macAddress)}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">🌍</span><span>LAN IP</span></div>
+                            <div class="field-value">${escapeHtml(device.ipAddress)}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">🌐</span><span>WAN IP</span></div>
+                            <div class="field-value">${escapeHtml(device.wanIpAddress)}</div>
+                        </div>
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">💿</span><span>OS Version</span></div>
+                            <div class="field-value">${escapeHtml(device.osVersion)}</div>
+                        </div>
+                        ${device.batteryHealth ? `
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">🔋</span><span>Battery</span></div>
+                            <div class="field-value">${device.batteryHealth}%</div>
+                        </div>
+                        ` : ''}
+                        <div class="device-field">
+                            <div class="field-label"><span class="field-icon">🕐</span><span>Last Activity</span></div>
+                            <div class="field-value">${fmt(device.lastSync)}</div>
+                            <div class="field-value-secondary">Most recent device usage</div>
+                        </div>
+                    </div>
+
+                    <div class="quick-actions-panel" style="margin-top: 12px;">
+                        <div class="quick-actions-buttons">
+                            <button class="quick-action-btn" onclick="copyToClipboard('Serial', '${escapeHtml(device.serialNumber)}', this)">
+                                <span class="quick-action-icon">📋</span>
+                                <span class="quick-action-text">Copy Serial</span>
+                            </button>
+                            <button class="quick-action-btn" onclick="copyToClipboard('Asset Tag', '${escapeHtml(device.assetTag)}', this)">
+                                <span class="quick-action-icon">🏷️</span>
+                                <span class="quick-action-text">Copy Asset Tag</span>
+                            </button>
+                            ${device.deviceId ? `
+                            <button class="quick-action-btn" onclick="window.open('${googleLink}', '_blank')">
+                                <span class="quick-action-icon">⚙️</span>
+                                <span class="quick-action-text">Google Admin</span>
+                            </button>
+                            ` : ''}
+                            ${device.iiqAssetId ? `
+                            <button class="quick-action-btn" onclick="window.open('${iiqLink}', '_blank')">
+                                <span class="quick-action-icon">📊</span>
+                                <span class="quick-action-text">IncidentIQ</span>
+                            </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+
+    html += `
+            </div>
+        </div>
+    `;
+
+    return html;
 }
-h+=`<div class="device-card"><div class="device-header"><div><span class="device-serial">👤 ${u.fullName}</span><div style="font-size:0.8em;color:#666;margin-top:4px">📧 ${u.email}</div></div><span class="device-badge ${bc}">${status}</span></div><div class="device-grid"><div><div class="field-label">🏫 LOCATION</div><div class="field-value">${u.location}</div></div><div><div class="field-label">📚 GRADE</div><div class="field-value">${u.grade||'N/A'}</div></div><div><div class="field-label">📁 ORG UNIT</div><div class="field-value">${u.googleOrgUnit||'N/A'}</div></div><div><div class="field-label">💻 DEVICES</div><div class="field-value">${u.assignedCount||0}</div></div></div>${devices}</div>`;
-});
-c.innerHTML=h;
+
+function toggleDeviceDetails(deviceId) {
+    const details = document.getElementById(`${deviceId}-details`);
+    const icon = document.getElementById(`${deviceId}-icon`);
+
+    if (details.style.display === 'none') {
+        details.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        details.style.display = 'none';
+        icon.textContent = '▶';
+    }
 }
+
 function clearUserSearch(){document.getElementById('userSearchInput').value='';document.getElementById('searchInfo').innerHTML='';document.getElementById('userResultsContainer').innerHTML='<div class="no-results">Enter user name or email</div>'}
 function searchDeviceFromUser(assetTag){switchTab('search');document.getElementById('searchInput').value=assetTag;searchDevices()}
 

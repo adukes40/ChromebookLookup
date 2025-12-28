@@ -11,6 +11,7 @@ load_dotenv('/opt/chromebook-dashboard/.env')
 from integrations.google import GoogleWorkspaceClient
 from integrations.incidentiq import IncidentIQClient
 from integrations.meraki import MerakiClient
+from integrations.google_telemetry import ChromeTelemetryClient
 from services.sync_service_simple import SimpleSyncService
 from database.connection import db
 
@@ -34,9 +35,10 @@ def main():
         google = GoogleWorkspaceClient(credentials_file, admin_email)
         iiq = IncidentIQClient(iiq_site_id, iiq_token)
         meraki = MerakiClient(meraki_key, meraki_org)
+        telemetry = ChromeTelemetryClient(credentials_file, admin_email)
         print("✓ API clients initialized\n")
-        
-        sync = SimpleSyncService(google, iiq, meraki)
+
+        sync = SimpleSyncService(google, iiq, meraki, telemetry)
         result = sync.sync_chromebooks()
         
         print("\n" + "=" * 60)
@@ -52,6 +54,10 @@ def main():
             print(f"  Processed: {result['chromebooks_processed']}")
             print(f"  Created: {result['chromebooks_created']}")
             print(f"  Updated: {result['chromebooks_updated']}")
+            print(f"\nUsers (Google Workspace):")
+            print(f"  Processed: {result.get('users_processed', 0)}")
+            print(f"  Created: {result.get('users_created', 0)}")
+            print(f"  Updated: {result.get('users_updated', 0)}")
         else:
             print("✗ Sync failed!")
             print(f"Error: {result.get('error')}")

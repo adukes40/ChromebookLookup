@@ -204,16 +204,16 @@ class IncidentIQClient:
                 "Facets": 4,  # 4 = Users facet
                 "IncludeMatchedItem": False
             }
-            
+
             headers = self.session.headers.copy()
             headers.update({'Content-Type': 'application/json'})
-            
+
             response = requests.post(url, json=payload, headers=headers, timeout=15)
             response.raise_for_status()
-            
+
             data = response.json()
             items = data.get('Items', [])
-            
+
             # Get full user details for each result
             users = []
             for item in items[:limit]:
@@ -226,13 +226,45 @@ class IncidentIQClient:
                         user_data = user_response.json()
                         if user_data.get('Item'):
                             users.append(user_data.get('Item'))
-            
+
             logger.info(f"User search found {len(users)} users for '{query}'")
             return users
         except Exception as e:
             logger.error(f"User search failed: {e}")
             return []
-    
+
+    def get_users(self, page: int = 1, page_size: int = 1000) -> List[Dict]:
+        """
+        Fetch users from IIQ via pagination.
+
+        This is used for the unified user sync to bring in ALL IIQ users
+        and match them with Google Workspace users by email.
+
+        Args:
+            page: Page number (1-based)
+            page_size: Number of users per page (max 1000)
+
+        Returns:
+            List of user dicts with: UserId, Email, Name, FirstName, LastName,
+                                    Location, Role, SchoolIdNumber, Grade, etc.
+        """
+        try:
+            # IIQ API uses $skip for pagination (0-based)
+            skip = (page - 1) * page_size
+            url = f'{self.base_url}/users?$s={page_size}&$sk={skip}'
+
+            response = self.session.get(url, timeout=15)
+            response.raise_for_status()
+
+            data = response.json()
+            items = data.get('Items', [])
+
+            logger.info(f"Fetched {len(items)} users (page {page}, skip {skip})")
+            return items
+        except Exception as e:
+            logger.error(f"Error fetching users page {page}: {e}")
+            return []
+
     def get_user_assets(self, user_id: str) -> List[Dict]:
         """Get assets assigned to a user"""
         try:

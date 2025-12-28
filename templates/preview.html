@@ -2,8 +2,11 @@
 <html>
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Chromebook Dashboard - Design Preview</title>
-<link rel="stylesheet" href="/static/css/preview.css?v=20251224-1805">
+<link rel="stylesheet" href="/static/css/preview.css?v=20251225-fees">
 <style>
 /* Preview Banner */
 .preview-banner {
@@ -35,8 +38,9 @@
 <div id="heroSection" class="hero-section">
   <div class="hero-content">
     <div class="hero-text">
-      <h2 class="hero-title">Welcome to The Rider Tech View</h2>
-      <p class="hero-subtitle">Unified device management across IncidentIQ, Google Workspace, and Meraki</p>
+      <img src="/static/images/cr-logo-official.png" alt="Caesar Rodney School District" class="brand-logo">
+      <h2 class="hero-title">Welcome to ATLAS</h2>
+      <p class="hero-subtitle">Asset Tracking Lookup of Aggregated Systems</p>
     </div>
     <div class="quick-stats-grid">
       <div class="stat-card">
@@ -111,10 +115,6 @@
     </div>
     <div id="recentSearchesList" class="recent-list"></div>
   </div>
-
-  <button class="hero-toggle" id="heroToggle" onclick="toggleHero()">
-    <span id="heroToggleIcon">▲</span> Collapse
-  </button>
 </div>
 
 <div class="tabs-container">
@@ -164,19 +164,20 @@
 <div id="reportsTab" class="tab-content">
     <div style="margin-bottom: 20px;">
         <h2 style="color: #00A3FF;">📊 Chromebook Analytics</h2>
-        <p style="color: #999;">Dashboard updates daily at 2 AM with device data from Google Workspace</p>
+        <p style="color: #999;">Analytics dashboard coming soon</p>
     </div>
+</div>
+</div>
 
-    <iframe
-        width="100%"
-        height="1200"
-        src="https://lookerstudio.google.com/embed/reporting/ccaee7cd-a2ef-48bf-9d50-fc8d858d2f98/page/4j1iF"
-        frameborder="0"
-        style="border:0"
-        allowfullscreen>
-    </iframe>
-</div>
-</div>
-<script src="/static/js/preview.js?v=20251224-1805"></script>
+<!-- Branded Footer -->
+<footer class="brand-footer">
+  <div class="brand-footer-content">
+    <span class="footer-text">Caesar Rodney School District</span>
+    <span class="footer-separator">•</span>
+    <span class="footer-tagline">It's A Great Day to Be a Rider</span>
+  </div>
+</footer>
+
+<script src="/static/js/preview-DEC25.js?t={{ cache_bust }}"></script>
 </body>
 </html>

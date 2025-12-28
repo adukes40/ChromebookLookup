@@ -2,7 +2,7 @@
 Database models for caching Chromebook, User, and Meraki data
 Designed for PostgreSQL with SQLAlchemy
 """
-from sqlalchemy import Column, String, DateTime, Integer, BigInteger, Text, Boolean, JSON
+from sqlalchemy import Column, String, DateTime, Integer, BigInteger, Text, Boolean, JSON, Numeric
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -148,6 +148,27 @@ class User(Base):
     student_id = Column(String(50), index=True)
     student_grade = Column(String(20))
 
+    # Data source tracking (Unified User Management)
+    google_user_id = Column(String(255), index=True, nullable=True)  # From Google
+    iiq_user_id = Column(String(255), index=True, nullable=True)  # From IIQ
+    google_synced_at = Column(DateTime, nullable=True)
+    iiq_synced_at = Column(DateTime, nullable=True)
+
+    # Fee Tracker integration
+    total_fee_balance = Column(Numeric(10, 2), default=0.00)  # Dollar amount
+    fee_last_synced = Column(DateTime, nullable=True)
+    has_outstanding_fees = Column(Boolean, default=False, index=True)
+
+    # IIQ-specific fields
+    iiq_location = Column(String(255))
+    iiq_role_name = Column(String(100))  # Student, Teacher, Staff, etc.
+    is_active_iiq = Column(Boolean, default=True)
+    username = Column(String(255), index=True, nullable=True)  # IIQ username
+
+    # Merge metadata
+    data_source = Column(String(50))  # 'google', 'iiq', 'merged'
+    is_merged = Column(Boolean, default=False)
+
     # Metadata
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -166,7 +187,26 @@ class User(Base):
             'is_suspended': self.is_suspended,
             'assigned_devices': self.assigned_devices or [],
             'device_count': self.device_count,
+            'student_id': self.student_id,
+            'student_grade': self.student_grade,
             'last_login': self.last_login.isoformat() if self.last_login else None,
+            # Unified user management fields
+            'google_user_id': self.google_user_id,
+            'iiq_user_id': self.iiq_user_id,
+            'google_synced_at': self.google_synced_at.isoformat() if self.google_synced_at else None,
+            'iiq_synced_at': self.iiq_synced_at.isoformat() if self.iiq_synced_at else None,
+            # Fee Tracker fields
+            'total_fee_balance': float(self.total_fee_balance) if self.total_fee_balance else 0.0,
+            'has_outstanding_fees': self.has_outstanding_fees,
+            'fee_last_synced': self.fee_last_synced.isoformat() if self.fee_last_synced else None,
+            # IIQ fields
+            'iiq_location': self.iiq_location,
+            'iiq_role_name': self.iiq_role_name,
+            'is_active_iiq': self.is_active_iiq,
+            'username': self.username,
+            # Metadata
+            'data_source': self.data_source,
+            'is_merged': self.is_merged,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 

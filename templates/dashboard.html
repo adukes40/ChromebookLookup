@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Chromebook Dashboard</title>
-<link rel="stylesheet" href="/static/css/main.css">
+<link rel="stylesheet" href="/static/css/main.css?v=20251227-fix-username">
 </head>
 <body>
 <div class="container">
@@ -11,8 +11,9 @@
 <div id="heroSection" class="hero-section">
   <div class="hero-content">
     <div class="hero-text">
-      <h2 class="hero-title">Welcome to The Rider Tech View</h2>
-      <p class="hero-subtitle">Unified device management across IncidentIQ, Google Workspace, and Meraki</p>
+      <img src="/static/images/cr-logo-official.png" alt="Caesar Rodney School District" class="brand-logo">
+      <h2 class="hero-title">Welcome to ATLAS</h2>
+      <p class="hero-subtitle">Asset Tracking Lookup of Aggregated Systems</p>
     </div>
     <div class="quick-stats-grid">
       <div class="stat-card">
@@ -45,6 +46,78 @@
       </div>
     </div>
   </div>
+
+  <!-- NEW DASHBOARD WIDGETS SECTION -->
+  <div class="dashboard-widgets-section">
+    <div class="widgets-header">
+      <h3 class="widgets-title">System Health & Alerts</h3>
+      <button class="widget-refresh-btn" onclick="refreshWidgets()" title="Refresh widget data (12-hour cache)">
+        <span id="widgetRefreshIcon">🔄</span> Refresh
+      </button>
+    </div>
+
+    <div class="widgets-grid">
+      <!-- AUE Expiration Tracker Widget -->
+      <div class="widget-card widget-aue">
+        <div class="widget-header">
+          <div class="widget-icon">📅</div>
+          <h4 class="widget-title">AUE Expiration by Year</h4>
+        </div>
+        <div class="widget-body">
+          <div class="aue-years-container" id="aueYearsContainer">
+            <!-- Year tiles will be dynamically inserted here -->
+            <div class="aue-loading">Loading...</div>
+          </div>
+          <div class="widget-footer">
+            <div class="widget-footer-stat">
+              <span class="widget-footer-label">Already Expired:</span>
+              <span class="widget-footer-value" id="aueExpiredCount">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Security Alerts Widget -->
+      <div class="widget-card widget-security">
+        <div class="widget-header">
+          <div class="widget-icon">🔒</div>
+          <h4 class="widget-title">Security & Maintenance Alerts</h4>
+        </div>
+        <div class="widget-body">
+          <div class="widget-alert-list">
+            <div class="widget-alert-item dev-mode">
+              <div class="alert-icon">⚠️</div>
+              <div class="alert-content">
+                <div class="alert-label">Developer Mode</div>
+                <div class="alert-value" id="devModeCount">—</div>
+              </div>
+            </div>
+            <div class="widget-alert-item battery">
+              <div class="alert-icon">🔋</div>
+              <div class="alert-content">
+                <div class="alert-label">Poor Battery Health (&lt;30%)</div>
+                <div class="alert-value" id="poorBatteryCount">—</div>
+              </div>
+            </div>
+            <div class="widget-alert-item repairs">
+              <div class="alert-icon">🔧</div>
+              <div class="alert-content">
+                <div class="alert-label">Pending Repairs</div>
+                <div class="alert-value" id="pendingRepairsCount">—</div>
+              </div>
+            </div>
+          </div>
+          <div class="widget-footer">
+            <div class="widget-footer-stat total-alerts">
+              <span class="widget-footer-label">Total Alerts:</span>
+              <span class="widget-footer-value" id="totalAlerts">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- END DASHBOARD WIDGETS SECTION -->
 
   <div class="quick-actions">
     <h3 class="quick-actions-title">Quick Actions</h3>
@@ -87,10 +160,6 @@
     </div>
     <div id="recentSearchesList" class="recent-list"></div>
   </div>
-
-  <button class="hero-toggle" id="heroToggle" onclick="toggleHero()">
-    <span id="heroToggleIcon">▲</span> Collapse
-  </button>
 </div>
 
 <div class="tabs-container">
@@ -125,8 +194,90 @@
 <button class="search-button" onclick="searchDevices()">Search</button>
 <button class="clear-button" onclick="clearSearch()">Clear</button>
 </div>
+
+<!-- Advanced Filter Panel -->
+<div class="advanced-search-toggle" onclick="toggleAdvancedSearch()">
+  <span id="advancedSearchToggleIcon">▼</span> Advanced Filters
+</div>
+<div id="advancedSearchPanel" class="advanced-search-panel" style="display: none;">
+  <div class="filter-grid">
+    <div class="filter-item">
+      <label class="filter-label">Status</label>
+      <select id="filterStatus" class="filter-select" onchange="advancedSearchDevices()">
+        <option value="">All</option>
+        <option value="ACTIVE">Active</option>
+        <option value="DISABLED">Disabled</option>
+        <option value="DEPROVISIONED">Deprovisioned</option>
+      </select>
+    </div>
+
+    <div class="filter-item">
+      <label class="filter-label">Model</label>
+      <input type="text" id="filterModel" class="filter-input" placeholder="Enter model name..." onkeypress="if(event.key==='Enter')advancedSearchDevices()">
+    </div>
+
+    <div class="filter-item">
+      <label class="filter-label">Location</label>
+      <input type="text" id="filterLocation" class="filter-input" placeholder="Enter location..." onkeypress="if(event.key==='Enter')advancedSearchDevices()">
+    </div>
+
+    <div class="filter-item">
+      <label class="filter-label">Org Unit</label>
+      <input type="text" id="filterOrgUnit" class="filter-input" placeholder="Enter org unit path..." onkeypress="if(event.key==='Enter')advancedSearchDevices()">
+    </div>
+
+    <div class="filter-item">
+      <label class="filter-label">Battery Health</label>
+      <select id="filterBattery" class="filter-select" onchange="advancedSearchDevices()">
+        <option value="">All</option>
+        <option value="0-30">&lt; 30% (Poor)</option>
+        <option value="30-50">30-50% (Fair)</option>
+        <option value="50-80">50-80% (Good)</option>
+        <option value="80-100">&gt; 80% (Excellent)</option>
+      </select>
+    </div>
+
+    <div class="filter-item">
+      <label class="filter-label">Boot Mode</label>
+      <select id="filterBootMode" class="filter-select" onchange="advancedSearchDevices()">
+        <option value="">All</option>
+        <option value="Verified">Verified</option>
+        <option value="Dev">Dev Mode</option>
+      </select>
+    </div>
+
+    <div class="filter-item">
+      <label class="filter-label">AUE Year</label>
+      <select id="filterAueYear" class="filter-select" onchange="advancedSearchDevices()">
+        <option value="">All</option>
+        <option value="2025">2025</option>
+        <option value="2026">2026</option>
+        <option value="2027">2027</option>
+        <option value="2028">2028</option>
+        <option value="2029">2029</option>
+        <option value="2030">2030+</option>
+      </select>
+    </div>
+
+    <div class="filter-item">
+      <label class="filter-label">Repair Status</label>
+      <select id="filterRepairStatus" class="filter-select" onchange="advancedSearchDevices()">
+        <option value="">All</option>
+        <option value="In Repair">In Repair</option>
+        <option value="Pending Repair">Pending Repair</option>
+        <option value="Repair Needed">Needs Repair</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="filter-actions">
+    <button class="filter-clear-btn" onclick="clearAdvancedFilters()">Clear Filters</button>
+    <button class="filter-search-btn" onclick="advancedSearchDevices()">Apply Filters</button>
+  </div>
+</div>
+
 <div id="searchInfo"></div>
-<div id="resultsContainer"><div class="no-results">Enter search term</div></div>
+<div id="resultsContainer"><div class="no-results">Enter search term to begin</div></div>
 </div>
 <div id="usersTab" class="tab-content">
 <div class="search-container">
@@ -140,19 +291,20 @@
 <div id="reportsTab" class="tab-content">
     <div style="margin-bottom: 20px;">
         <h2 style="color: #00A3FF;">📊 Chromebook Analytics</h2>
-        <p style="color: #999;">Dashboard updates daily at 2 AM with device data from Google Workspace</p>
+        <p style="color: #999;">Analytics dashboard coming soon</p>
     </div>
+</div>
+</div>
 
-    <iframe
-        width="100%"
-        height="1200"
-        src="https://lookerstudio.google.com/embed/reporting/ccaee7cd-a2ef-48bf-9d50-fc8d858d2f98/page/4j1iF"
-        frameborder="0"
-        style="border:0"
-        allowfullscreen>
-    </iframe>
-</div>
-</div>
-<script src="/static/js/dashboard.js"></script>
+<!-- Branded Footer -->
+<footer class="brand-footer">
+  <div class="brand-footer-content">
+    <span class="footer-text">Caesar Rodney School District</span>
+    <span class="footer-separator">•</span>
+    <span class="footer-tagline">It's A Great Day to Be a Rider</span>
+  </div>
+</footer>
+
+<script src="/static/js/dashboard.js?v=20251227-fix-username"></script>
 </body>
 </html>

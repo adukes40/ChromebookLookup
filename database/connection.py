@@ -25,7 +25,9 @@ class Database:
         if database_url is None:
             # Build from environment variables
             db_user = os.getenv('DB_USER', 'chromebook_user')
-            db_pass = os.getenv('DB_PASSWORD', 'j3ymMbqRknz4twazvaVX8zVJN')
+            db_pass = os.getenv('DB_PASSWORD')
+            if not db_pass:
+                raise ValueError("DB_PASSWORD environment variable is required")
             db_host = os.getenv('DB_HOST', 'localhost')
             db_port = os.getenv('DB_PORT', '5432')
             db_name = os.getenv('DB_NAME', 'chromebook_dashboard')
