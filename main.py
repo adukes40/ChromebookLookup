@@ -632,8 +632,25 @@ async def advanced_device_search(
 
         results = db.execute(data_query, params).fetchall()
 
+        # Build lookup of serial numbers to get real-time assetIds from IIQ
+        iiq_asset_lookup = {}
+        serials_for_iiq = [row[1] for row in results]  # Extract serial numbers
+        if serials_for_iiq:
+            try:
+                iiq_client = IncidentIQClient(INCIDENTIQ_SITE_ID, INCIDENTIQ_API_TOKEN, INCIDENTIQ_PRODUCT_ID)
+                for serial in serials_for_iiq:
+                    iiq_results = iiq_client.search_and_extract(serial, limit=1)
+                    if iiq_results:
+                        iiq_asset_lookup[serial] = iiq_results[0].get('assetId', '')
+            except Exception as e:
+                logger.warning(f"Failed to fetch real-time IIQ assetIds: {e}")
+
         devices = []
         for row in results:
+            serial = row[1]
+            # Use real-time assetId from IIQ if available, otherwise use database value
+            real_time_asset_id = iiq_asset_lookup.get(serial) or row[19]
+
             devices.append({
                 "device_id": row[0],
                 "serial_number": row[1],
@@ -654,7 +671,7 @@ async def advanced_device_search(
                 "iiq_notes": row[16],
                 "last_sync_status": row[17],
                 "updated_at": row[18].isoformat() if row[18] else None,
-                "iiq_asset_id": row[19],
+                "iiq_asset_id": real_time_asset_id,
                 "mac_address": row[20],
                 "ip_address": row[21],
                 "wan_ip_address": row[22],
