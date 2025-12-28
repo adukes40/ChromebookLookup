@@ -345,12 +345,11 @@ function normalizeDeviceFields(devices) {
         org_unit_path: d.orgUnitPath || d.org_unit_path,
 
         // Battery & boot
-        // Note: simple search may not have boot_mode (not available from IIQ API)
         battery_health: d.batteryHealth || d.battery_health || null,
         boot_mode: d.bootMode || d.boot_mode || null,
 
         // Dates & versions
-        auto_update_expiration: d.aueDate || d.auto_update_expiration,
+        auto_update_expiration: d.aueDate || d.auto_update_expiration || null,
         iiq_status: d.iiqStatus || d.iiq_status,
         mac_address: d.macAddress || d.mac_address,
         ip_address: d.ipAddress || d.ip_address,

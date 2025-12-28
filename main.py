@@ -705,16 +705,16 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
         if not iiq_results:
             return {"devices": [], "count": 0, "source": "iiq"}
 
-        # STEP 2: For chromebooks only, fetch cached Google data from database
-        # Build list of serial numbers for chromebooks
-        chromebook_serials = [
+        # STEP 2: Fetch Google data from database for ALL devices (not just those marked as chromebook in IIQ)
+        # Some devices may be chromebooks but not marked as such in IIQ
+        all_serials = [
             asset['serialNumber'] for asset in iiq_results
-            if asset.get('isChromebook') and asset.get('serialNumber') != 'N/A'
+            if asset.get('serialNumber') != 'N/A'
         ]
 
-        # Query database for Google data (if any chromebooks found)
+        # Query database for Google data (if any serials found)
         google_data_lookup = {}
-        if chromebook_serials:
+        if all_serials:
             google_query = text("""
                 SELECT
                     serial_number,
@@ -734,12 +734,14 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
                     battery_cycle_count,
                     platform_version,
                     firmware_version,
-                    wan_ip_address
+                    wan_ip_address,
+                    auto_update_expiration,
+                    boot_mode
                 FROM chromebooks
                 WHERE serial_number = ANY(:serials)
             """)
 
-            google_results = db.execute(google_query, {"serials": chromebook_serials}).fetchall()
+            google_results = db.execute(google_query, {"serials": all_serials}).fetchall()
             google_data_lookup = {row[0]: row for row in google_results}
 
         # STEP 3: Merge IIQ data with Google data
@@ -763,8 +765,8 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
                 'source': 'iiq'
             }
 
-            # If chromebook, merge with Google data from database (cached)
-            if is_chromebook and serial in google_data_lookup:
+            # Try to merge with Google data from database (cached) for any device found in chromebooks table
+            if serial in google_data_lookup:
                 google_row = google_data_lookup[serial]
 
                 # Parse recent_users JSON
@@ -794,11 +796,13 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
                     'platformVersion': google_row[15] or 'N/A',
                     'firmwareVersion': google_row[16] or 'N/A',
                     'wanIpAddress': google_row[17] or 'N/A',
+                    'aueDate': google_row[18].isoformat() if google_row[18] else None,
+                    'bootMode': google_row[19],
                     'lastKnownUser': last_known_user,
                     'source': 'iiq+google'
                 })
             else:
-                # Non-chromebook or chromebook without Google data: set defaults
+                # Not in chromebooks table: set defaults for Google data
                 device.update({
                     'deviceId': '',
                     'googleStatus': 'N/A',
@@ -810,10 +814,12 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
                     'orgUnitPath': 'N/A',
                     'assignedUser': device['iiqOwnerEmail'],
                     'recentUsers': [],
-                    'lastKnownUser': device['iiqOwnerEmail'],
                     'merakiApName': None,
                     'merakiNetwork': None,
                     'merakiLastSeen': None,
+                    'aueDate': None,
+                    'bootMode': None,
+                    'lastKnownUser': device['iiqOwnerEmail'],
                 })
 
             devices.append(device)
