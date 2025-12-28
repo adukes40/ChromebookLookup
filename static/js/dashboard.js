@@ -319,6 +319,47 @@ function switchTab(t){
     document.getElementById(t+'Tab').classList.add('active');
 }
 
+// Normalize field names from camelCase (simple search) to snake_case (advanced search format)
+function normalizeDeviceFields(devices) {
+    return devices.map(d => ({
+        // Core fields
+        asset_tag: d.assetTag || d.asset_tag,
+        serial_number: d.serialNumber || d.serial_number,
+        model: d.model,
+        status: d.googleStatus || d.status,
+        device_id: d.deviceId || d.device_id,
+        iiq_asset_id: d.assetId || d.iiq_asset_id,
+
+        // User fields
+        iiq_owner_name: d.iiqOwnerName || d.iiq_owner_name,
+        iiq_owner_email: d.iiqOwnerEmail || d.iiq_owner_email,
+        iiq_owner_student_id: d.iiqOwnerStudentId || d.iiq_owner_student_id,
+        annotated_user: d.assignedUser || d.annotated_user,
+        user_full_name: d.userFullName || d.user_full_name,
+
+        // Location & org
+        iiq_location: d.iiqLocation || d.iiq_location,
+        iiq_room: d.iiqRoom || d.iiq_room,
+        annotated_location: d.annotatedLocation || d.annotated_location,
+        org_unit_path: d.orgUnitPath || d.org_unit_path,
+
+        // Battery & boot
+        battery_health: d.batteryHealth || d.battery_health,
+        boot_mode: d.bootMode || d.boot_mode,
+
+        // Dates & versions
+        auto_update_expiration: d.aueDate || d.auto_update_expiration,
+        iiq_status: d.iiqStatus || d.iiq_status,
+        mac_address: d.macAddress || d.mac_address,
+        ip_address: d.ipAddress || d.ip_address,
+        wan_ip_address: d.wanIpAddress || d.wan_ip_address,
+        os_version: d.osVersion || d.os_version,
+        last_used_date: d.lastUsedDate || d.last_used_date,
+        recent_users: d.recentUsers || d.recent_users || [],
+        iiq_asset_id: d.assetId || d.iiq_asset_id
+    }));
+}
+
 async function searchDevices(){
     const q=document.getElementById('searchInput').value.trim();
     if(!q){alert('Enter search term');return}
@@ -329,8 +370,14 @@ async function searchDevices(){
         const res=await fetch(`/api/combined/search?query=${encodeURIComponent(q)}`);
         const data=await res.json();
         if(!res.ok)throw new Error(data.detail||'Search failed');
-        displayResults(data.devices);
-        document.getElementById('searchInfo').innerHTML=`Found ${data.count} device(s)`;
+        // Normalize field names and use the same display function as advanced search
+        const normalizedData = {
+            devices: normalizeDeviceFields(data.devices || []),
+            total_count: data.count || 0
+        };
+        displayAdvancedSearchResults(normalizedData);
+        // Format info display to match advanced search style
+        document.getElementById('searchInfo').innerHTML=`<div style="color:var(--text-secondary);margin-bottom:15px"><strong>${(data.count || 0).toLocaleString()}</strong> device(s) found</div>`;
         showToast(`Found ${data.count} device(s)`, 'success');
     }catch(e){
         r.innerHTML=`<div style="background:#ffebee;color:#c62828;padding:15px;border-radius:8px">Error: ${e.message}</div>`;
