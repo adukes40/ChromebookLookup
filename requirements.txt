@@ -16,3 +16,4 @@ passlib[bcrypt]==1.7.4
 python-dotenv==1.0.1
 httpx==0.26.0
 tenacity==8.2.3
+psutil==5.9.8

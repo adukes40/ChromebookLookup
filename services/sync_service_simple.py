@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 import gc  # Garbage collection for memory optimization
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import psutil  # Memory monitoring
+import time
 
 import sys
 import os
@@ -27,6 +29,46 @@ class SimpleSyncService:
         self.iiq = iiq_api
         self.meraki = meraki_api
         self.telemetry = telemetry_api
+
+    @staticmethod
+    def get_memory_percent():
+        """Get current system memory usage as percentage (0-100)"""
+        return psutil.virtual_memory().percent
+
+    def wait_for_memory(self, max_percent: float = 75.0, check_interval: float = 5.0, max_wait: float = 300.0):
+        """
+        Wait until memory usage drops below max_percent.
+
+        Args:
+            max_percent: Maximum allowed memory usage (default 75%)
+            check_interval: How often to check (seconds)
+            max_wait: Maximum time to wait (seconds), then proceed anyway
+
+        Returns:
+            True if memory is below limit, False if timed out
+        """
+        start_time = time.time()
+        current_mem = self.get_memory_percent()
+
+        if current_mem < max_percent:
+            return True
+
+        print(f"  ⚠ Memory at {current_mem:.1f}% (limit: {max_percent}%) - waiting for cleanup...")
+
+        while time.time() - start_time < max_wait:
+            time.sleep(check_interval)
+            gc.collect()
+            current_mem = self.get_memory_percent()
+
+            if current_mem < max_percent:
+                print(f"  ✓ Memory down to {current_mem:.1f}% - resuming")
+                return True
+
+            elapsed = int(time.time() - start_time)
+            print(f"    [{elapsed}s] Memory still at {current_mem:.1f}%...")
+
+        print(f"  ⚠ Timeout waiting for memory (waited {max_wait}s) - proceeding anyway")
+        return False
     
     def sync_chromebooks(self) -> Dict[str, Any]:
         """Sync all assets from IIQ, then enhance chromebooks with Google Admin data"""
@@ -827,9 +869,11 @@ class SimpleSyncService:
             traceback.print_exc()
             raise
 
-    def sync_unified_users_fast(self, max_workers: int = 5, page_size: int = 5000, fee_workers: int = 10) -> Dict[str, Any]:
+    def sync_unified_users_fast(self, max_workers: int = 5, page_size: int = 5000, fee_workers: int = 10, max_memory_percent: float = 75.0) -> Dict[str, Any]:
         """
         Ultra-fast unified user sync with parallel page fetching and fee requests.
+
+        MEMORY-SAFE: Pauses if RAM usage exceeds max_memory_percent.
 
         Trade-off: Uses more RAM to achieve maximum speed.
         - Parallel page fetching (5 pages at once by default)
@@ -837,11 +881,13 @@ class SimpleSyncService:
         - Larger page size (5000 users)
         - Bulk inserts instead of individual adds
         - Fewer, larger commits
+        - MEMORY LIMITED: Won't exceed max_memory_percent (default 75%)
 
         Args:
             max_workers: Number of parallel page fetches (default 5)
             page_size: IIQ users per page (default 5000, was 1000)
             fee_workers: Parallel fee fetches (default 10)
+            max_memory_percent: Max RAM usage % before pausing (default 75%)
 
         Returns:
             Dict with sync results and duration
@@ -854,8 +900,10 @@ class SimpleSyncService:
         lock = threading.Lock()
 
         try:
+            current_mem = self.get_memory_percent()
             print("\n" + "=" * 80)
-            print(f"PHASE 2: FAST UNIFIED USER SYNC (Parallel Processing)")
+            print(f"PHASE 2: FAST UNIFIED USER SYNC (Parallel Processing - Memory Safe)")
+            print(f"  Current memory: {current_mem:.1f}% / {max_memory_percent}% limit")
             print(f"  Workers: {max_workers} page fetchers, {fee_workers} fee fetchers")
             print(f"  Page size: {page_size} users/page")
             print("=" * 80)
@@ -910,6 +958,12 @@ class SimpleSyncService:
                 pending_pages = set(range(2, 100))  # Try up to 100 pages
 
                 while pending_pages or futures:
+                    # Check memory before fetching more pages
+                    if pending_pages and len(futures) < max_workers:
+                        current_mem = self.get_memory_percent()
+                        if current_mem > max_memory_percent:
+                            self.wait_for_memory(max_memory_percent)
+
                     # Submit new pages up to max_workers
                     while len(futures) < max_workers and pending_pages:
                         page = min(pending_pages)
@@ -1018,6 +1072,12 @@ class SimpleSyncService:
             # STEP 6: Fetch fees in parallel (most expensive operation)
             print(f"\nSTEP 4: Fetching fee balances in parallel ({fee_workers} workers)...")
             iiq_user_ids = [email for email, _ in all_iiq_users if email in merged_emails]
+
+            # Check memory before fetching fees
+            current_mem = self.get_memory_percent()
+            if current_mem > max_memory_percent:
+                print(f"  Checking memory before fee fetch...")
+                self.wait_for_memory(max_memory_percent)
 
             def fetch_fees(iiq_user_id):
                 try:

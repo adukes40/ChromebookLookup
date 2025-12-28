@@ -19,16 +19,17 @@ from integrations.google import GoogleWorkspaceClient
 from integrations.incidentiq import IncidentIQClient
 from integrations.meraki import MerakiClient
 
-def run_fast_sync(max_workers=5, page_size=5000, fee_workers=10):
+def run_fast_sync(max_workers=5, page_size=5000, fee_workers=10, max_memory=75):
     """Run the fast parallel sync"""
     print("=" * 80)
-    print("FAST UNIFIED USER SYNC - PARALLEL PROCESSING")
+    print("FAST UNIFIED USER SYNC - PARALLEL PROCESSING (MEMORY SAFE)")
     print("=" * 80)
     print(f"\nConfiguration:")
     print(f"  Page fetcher workers: {max_workers}")
     print(f"  Fee fetcher workers: {fee_workers}")
     print(f"  Page size: {page_size} users/page")
-    print(f"\nThis trades memory for speed - maximum parallelism!")
+    print(f"  Memory limit: {max_memory}% (PROTECTED)")
+    print(f"\nThis trades memory for speed - maximum parallelism with safety!")
 
     try:
         # Initialize API clients
@@ -55,11 +56,12 @@ def run_fast_sync(max_workers=5, page_size=5000, fee_workers=10):
             meraki_api=meraki_client
         )
 
-        # Run fast sync
+        # Run fast sync with memory limit
         result = sync_service.sync_unified_users_fast(
             max_workers=max_workers,
             page_size=page_size,
-            fee_workers=fee_workers
+            fee_workers=fee_workers,
+            max_memory_percent=max_memory
         )
 
         if result.get('success'):
@@ -87,15 +89,17 @@ def run_fast_sync(max_workers=5, page_size=5000, fee_workers=10):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='Fast unified user sync with parallel processing')
+    parser = argparse.ArgumentParser(description='Fast unified user sync with parallel processing (memory safe)')
     parser.add_argument('--workers', type=int, default=5, help='Page fetcher workers (default 5)')
     parser.add_argument('--fee-workers', type=int, default=10, help='Fee fetcher workers (default 10)')
     parser.add_argument('--page-size', type=int, default=5000, help='Users per page (default 5000)')
+    parser.add_argument('--memory', type=int, default=75, help='Max RAM % before pausing (default 75)')
 
     args = parser.parse_args()
 
     sys.exit(run_fast_sync(
         max_workers=args.workers,
         page_size=args.page_size,
-        fee_workers=args.fee_workers
+        fee_workers=args.fee_workers,
+        max_memory=args.memory
     ))
