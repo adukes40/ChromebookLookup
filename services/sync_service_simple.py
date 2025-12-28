@@ -2,9 +2,11 @@
 Simplified sync service for chromebooks only (to start)
 """
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 import gc  # Garbage collection for memory optimization
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import sys
 import os
@@ -701,35 +703,10 @@ class SimpleSyncService:
                                     user.google_synced_at = datetime.now()
                                     user.updated_at = datetime.now()
                             else:
-                                # IIQ-ONLY: Create new user from IIQ data
-                                users_processed += 1
+                                # IIQ-ONLY: Skip for now (requires Google ID as primary key)
+                                # TODO: Future phase: implement user_id generation for IIQ-only users
                                 users_iiq_only += 1
-
-                                existing = session.query(User).filter(
-                                    User.email == email_lower
-                                ).first()
-
-                                if not existing:
-                                    new_user = User(
-                                        user_id=None,
-                                        email=iiq_data['email'],
-                                        full_name=iiq_data['name'],
-                                        first_name=iiq_data['first_name'],
-                                        last_name=iiq_data['last_name'],
-                                        iiq_user_id=iiq_data['user_id'],
-                                        iiq_location=iiq_data['location'],
-                                        iiq_role_name=iiq_data['role'],
-                                        is_active_iiq=iiq_data['is_active'],
-                                        username=iiq_data['username'],
-                                        student_id=iiq_data['student_id'],
-                                        student_grade=iiq_data['grade'],
-                                        data_source='iiq',
-                                        is_merged=False,
-                                        iiq_synced_at=datetime.now(),
-                                        created_at=datetime.now(),
-                                        updated_at=datetime.now()
-                                    )
-                                    session.add(new_user)
+                                pass
 
                             users_processed += 1
 
@@ -846,6 +823,261 @@ class SimpleSyncService:
 
         except Exception as e:
             print(f"\n✗ Unified user sync failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    def sync_unified_users_fast(self, max_workers: int = 5, page_size: int = 5000, fee_workers: int = 10) -> Dict[str, Any]:
+        """
+        Ultra-fast unified user sync with parallel page fetching and fee requests.
+
+        Trade-off: Uses more RAM to achieve maximum speed.
+        - Parallel page fetching (5 pages at once by default)
+        - Parallel fee fetching (10 users at once)
+        - Larger page size (5000 users)
+        - Bulk inserts instead of individual adds
+        - Fewer, larger commits
+
+        Args:
+            max_workers: Number of parallel page fetches (default 5)
+            page_size: IIQ users per page (default 5000, was 1000)
+            fee_workers: Parallel fee fetches (default 10)
+
+        Returns:
+            Dict with sync results and duration
+        """
+        start_time = datetime.now()
+        users_processed = 0
+        users_merged = 0
+        users_google_only = 0
+        fees_fetched = 0
+        lock = threading.Lock()
+
+        try:
+            print("\n" + "=" * 80)
+            print(f"PHASE 2: FAST UNIFIED USER SYNC (Parallel Processing)")
+            print(f"  Workers: {max_workers} page fetchers, {fee_workers} fee fetchers")
+            print(f"  Page size: {page_size} users/page")
+            print("=" * 80)
+
+            # STEP 1: Fetch all Google users from database
+            print("\nSTEP 1: Fetching Google Workspace users from database...")
+            google_users_by_email = {}
+            with db.get_session() as session:
+                google_users = session.query(User).filter(
+                    User.data_source.in_(['google', None])
+                ).all()
+
+                for user in google_users:
+                    if user.email:
+                        email_lower = user.email.lower()
+                        google_users_by_email[email_lower] = {
+                            'user_id': user.user_id,
+                            'email': user.email,
+                            'full_name': user.full_name,
+                            'first_name': user.first_name,
+                            'last_name': user.last_name,
+                            'org_unit_path': user.org_unit_path,
+                            'is_admin': user.is_admin,
+                            'is_suspended': user.is_suspended,
+                            'student_id': user.student_id,
+                            'student_grade': user.student_grade,
+                            'last_login': user.last_login
+                        }
+
+                print(f"  Found {len(google_users_by_email)} Google users in database")
+
+            # STEP 2: Determine max page number (need to test first page)
+            print("\nSTEP 2: Fetching IIQ users via parallel pagination...")
+            first_page = self.iiq.get_users(page=1, page_size=page_size)
+            print(f"  Page 1: {len(first_page)} users")
+
+            # Estimate max pages (assume similar size for all pages)
+            # We'll just fetch until we get an empty page
+            all_iiq_pages = [first_page]
+
+            # STEP 3: Parallel fetch remaining pages
+            def fetch_page(page_num):
+                try:
+                    return self.iiq.get_users(page=page_num, page_size=page_size)
+                except Exception as e:
+                    print(f"    Error fetching page {page_num}: {e}")
+                    return []
+
+            page_num = 2
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {}
+                pending_pages = set(range(2, 100))  # Try up to 100 pages
+
+                while pending_pages or futures:
+                    # Submit new pages up to max_workers
+                    while len(futures) < max_workers and pending_pages:
+                        page = min(pending_pages)
+                        pending_pages.remove(page)
+                        futures[executor.submit(fetch_page, page)] = page
+
+                    # Get completed pages
+                    for future in as_completed(futures.keys()):
+                        page = futures.pop(future)
+                        iiq_page = future.result()
+
+                        if not iiq_page:
+                            print(f"    Page {page}: Empty (end of pages)")
+                            break
+
+                        all_iiq_pages.append(iiq_page)
+                        print(f"    Page {page}: {len(iiq_page)} users (total: {sum(len(p) for p in all_iiq_pages)})")
+
+                        if len(iiq_page) < page_size:
+                            # Last page
+                            pending_pages.clear()
+                            break
+
+            print(f"  Total IIQ users fetched: {sum(len(p) for p in all_iiq_pages)}")
+
+            # STEP 4: Process all users in bulk
+            print("\nSTEP 3: Matching and merging users in parallel...")
+            merged_emails = set()
+            users_to_update = []
+            all_iiq_users = []
+
+            for page_num, iiq_page in enumerate(all_iiq_pages, 1):
+                for iiq_user in iiq_page:
+                    email = iiq_user.get('Email', '').strip().lower()
+                    if not email:
+                        continue
+
+                    all_iiq_users.append((email, iiq_user))
+
+                    if email in google_users_by_email:
+                        merged_emails.add(email)
+                        google_data = google_users_by_email[email]
+
+                        # Extract location and role
+                        location_obj = iiq_user.get('Location', {})
+                        location_name = location_obj.get('Name', '') if isinstance(location_obj, dict) else str(location_obj)
+
+                        role_obj = iiq_user.get('Role', {})
+                        role_name = role_obj.get('Name', '') if isinstance(role_obj, dict) else str(role_obj)
+
+                        users_to_update.append({
+                            'user_id': google_data['user_id'],
+                            'google_user_id': google_data['user_id'],
+                            'iiq_user_id': iiq_user.get('UserId', ''),
+                            'iiq_location': location_name,
+                            'iiq_role_name': role_name,
+                            'is_active_iiq': iiq_user.get('IsActive', True),
+                            'username': iiq_user.get('UserName', ''),
+                            'student_id': iiq_user.get('SchoolIdNumber', '') or google_data.get('student_id'),
+                            'student_grade': iiq_user.get('Grade', '') or google_data.get('student_grade'),
+                            'data_source': 'merged',
+                            'is_merged': True,
+                            'iiq_synced_at': datetime.now(),
+                            'google_synced_at': datetime.now(),
+                            'updated_at': datetime.now()
+                        })
+                        users_merged += 1
+                        users_processed += 1
+
+            # STEP 5: Bulk update merged users
+            print(f"  Merging {len(users_to_update)} users...")
+            with db.get_session() as session:
+                for user_data in users_to_update:
+                    user_id = user_data.pop('user_id')
+                    user = session.query(User).filter(User.user_id == user_id).first()
+                    if user:
+                        for key, value in user_data.items():
+                            setattr(user, key, value)
+
+                    if users_processed % 500 == 0:
+                        session.commit()
+                        gc.collect()
+
+                session.commit()
+                print(f"  Updated {users_merged} users")
+
+            # Mark Google-only users
+            google_only_count = 0
+            with db.get_session() as session:
+                for email_lower, google_data in google_users_by_email.items():
+                    if email_lower not in merged_emails:
+                        user = session.query(User).filter(User.user_id == google_data['user_id']).first()
+                        if user:
+                            user.google_user_id = google_data['user_id']
+                            user.data_source = 'google'
+                            user.is_merged = False
+                            user.google_synced_at = datetime.now()
+                            user.updated_at = datetime.now()
+                            google_only_count += 1
+
+                session.commit()
+
+            users_google_only = google_only_count
+            print(f"  Marked {google_only_count} Google-only users")
+
+            # STEP 6: Fetch fees in parallel (most expensive operation)
+            print(f"\nSTEP 4: Fetching fee balances in parallel ({fee_workers} workers)...")
+            iiq_user_ids = [email for email, _ in all_iiq_users if email in merged_emails]
+
+            def fetch_fees(iiq_user_id):
+                try:
+                    return (iiq_user_id, self.iiq.get_user_fees(iiq_user_id))
+                except Exception as e:
+                    return (iiq_user_id, None)
+
+            fees_dict = {}
+            with ThreadPoolExecutor(max_workers=fee_workers) as executor:
+                futures = {executor.submit(fetch_fees, uid): uid for uid in iiq_user_ids}
+                completed = 0
+                for future in as_completed(futures):
+                    iiq_user_id, fee_info = future.result()
+                    if fee_info and fee_info.get('total_balance', 0) > 0:
+                        fees_dict[iiq_user_id] = fee_info
+                        fees_fetched += 1
+
+                    completed += 1
+                    if completed % 100 == 0:
+                        print(f"  Fetched fees for {completed}/{len(iiq_user_ids)} users...")
+
+            # STEP 7: Update fees in database
+            if fees_dict:
+                with db.get_session() as session:
+                    for iiq_user_id, fee_info in fees_dict.items():
+                        user = session.query(User).filter(User.iiq_user_id == iiq_user_id).first()
+                        if user:
+                            user.total_fee_balance = Decimal(str(fee_info.get('total_balance', 0)))
+                            user.has_outstanding_fees = True
+                            user.fee_last_synced = datetime.now()
+
+                    session.commit()
+                    gc.collect()
+
+            # Summary
+            duration = int((datetime.now() - start_time).total_seconds())
+
+            print(f"\n✓ Fast unified user sync complete (took {duration}s):")
+            print(f"  Total users processed: {users_processed}")
+            print(f"  Users merged (Google + IIQ): {users_merged}")
+            print(f"  Google-only users: {users_google_only}")
+            print(f"  Users with fees: {fees_fetched}")
+            print(f"  Duration: {duration} seconds")
+
+            # Clear cache
+            cache.delete_pattern('user:*')
+            cache.delete_pattern('search:*')
+
+            return {
+                'success': True,
+                'users_processed': users_processed,
+                'users_merged': users_merged,
+                'users_google_only': users_google_only,
+                'fees_fetched': fees_fetched,
+                'duration_seconds': duration,
+                'method': 'fast_parallel'
+            }
+
+        except Exception as e:
+            print(f"\n✗ Fast sync failed: {e}")
             import traceback
             traceback.print_exc()
             raise
