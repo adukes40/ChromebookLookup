@@ -338,14 +338,16 @@ function normalizeDeviceFields(devices) {
         user_full_name: d.userFullName || d.user_full_name,
 
         // Location & org
-        iiq_location: d.iiqLocation || d.iiq_location,
+        // Simple search returns 'location' from IIQ, advanced search returns 'iiq_location' from DB
+        iiq_location: d.iiqLocation || d.iiq_location || d.location || 'Unknown',
         iiq_room: d.iiqRoom || d.iiq_room,
         annotated_location: d.annotatedLocation || d.annotated_location,
         org_unit_path: d.orgUnitPath || d.org_unit_path,
 
         // Battery & boot
-        battery_health: d.batteryHealth || d.battery_health,
-        boot_mode: d.bootMode || d.boot_mode,
+        // Note: simple search may not have boot_mode (not available from IIQ API)
+        battery_health: d.batteryHealth || d.battery_health || null,
+        boot_mode: d.bootMode || d.boot_mode || null,
 
         // Dates & versions
         auto_update_expiration: d.aueDate || d.auto_update_expiration,
