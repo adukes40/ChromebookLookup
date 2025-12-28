@@ -796,7 +796,7 @@ async def combined_search(user: dict = Depends(get_current_user), query: str = "
                     'platformVersion': google_row[15] or 'N/A',
                     'firmwareVersion': google_row[16] or 'N/A',
                     'wanIpAddress': google_row[17] or 'N/A',
-                    'aueDate': google_row[18].isoformat() if google_row[18] else None,
+                    'aueDate': google_row[18].isoformat() if google_row[18] and hasattr(google_row[18], 'isoformat') else google_row[18],
                     'bootMode': google_row[19],
                     'lastKnownUser': last_known_user,
                     'source': 'iiq+google'
