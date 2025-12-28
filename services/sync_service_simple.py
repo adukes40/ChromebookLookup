@@ -4,6 +4,7 @@ Simplified sync service for chromebooks only (to start)
 from datetime import datetime
 from typing import Dict, Any
 from sqlalchemy.orm import Session
+import gc  # Garbage collection for memory optimization
 
 import sys
 import os
@@ -622,100 +623,132 @@ class SimpleSyncService:
 
                 print(f"  Found {len(google_users_by_email)} Google users in database")
 
-            # STEP 2: Fetch all IIQ users via pagination
-            print("\nSTEP 2: Fetching IncidentIQ users via pagination...")
-            iiq_users = []
+            # STEP 2 & 3 & 4: Fetch IIQ users via pagination and stream-process (no memory buildup)
+            print("\nSTEP 2: Fetching and processing IncidentIQ users via streaming pagination...")
             page_size = 1000
             page_num = 1
-
-            while True:
-                print(f"  Fetching page {page_num}...")
-                try:
-                    iiq_page = self.iiq.get_users(page=page_num, page_size=page_size)
-                    if not iiq_page:
-                        break
-
-                    iiq_users.extend(iiq_page)
-                    print(f"    Got {len(iiq_page)} users (total: {len(iiq_users)})")
-
-                    if len(iiq_page) < page_size:
-                        break  # Last page
-
-                    page_num += 1
-                except Exception as e:
-                    print(f"  Warning: Error fetching IIQ users page {page_num}: {e}")
-                    break
-
-            print(f"  Total IIQ users fetched: {len(iiq_users)}")
-
-            # STEP 3: Create lookup by email for IIQ users
-            iiq_users_by_email = {}
-            iiq_user_ids = set()
-
-            for iiq_user in iiq_users:
-                email = iiq_user.get('Email', '').strip()
-                if email:
-                    email_lower = email.lower()
-                    iiq_user_id = iiq_user.get('UserId', '')
-                    iiq_user_ids.add(iiq_user_id)
-
-                    iiq_users_by_email[email_lower] = {
-                        'user_id': iiq_user_id,
-                        'email': email,
-                        'name': iiq_user.get('Name', ''),
-                        'first_name': iiq_user.get('FirstName', ''),
-                        'last_name': iiq_user.get('LastName', ''),
-                        'location': iiq_user.get('Location', ''),
-                        'role': iiq_user.get('Role', ''),
-                        'student_id': iiq_user.get('SchoolIdNumber', ''),
-                        'grade': iiq_user.get('Grade', ''),
-                        'username': iiq_user.get('UserName', ''),
-                        'is_active': iiq_user.get('IsActive', True)
-                    }
-
-            print(f"  Indexed {len(iiq_users_by_email)} IIQ users by email")
-
-            # STEP 4: Match and merge users
-            print("\nSTEP 3: Matching and merging users by email...")
+            total_iiq_fetched = 0
             merged_emails = set()
 
             with db.get_session() as session:
-                # Process all Google users and match with IIQ
+                while True:
+                    print(f"  Fetching page {page_num} ({page_size} users/page)...")
+                    try:
+                        iiq_page = self.iiq.get_users(page=page_num, page_size=page_size)
+                        if not iiq_page:
+                            print(f"    No more users found. Stopping pagination.")
+                            break
+
+                        total_iiq_fetched += len(iiq_page)
+                        print(f"    Got {len(iiq_page)} users (cumulative: {total_iiq_fetched})")
+
+                        # STREAM PROCESS: Match and merge each IIQ user immediately without storing all in memory
+                        for iiq_user in iiq_page:
+                            email = iiq_user.get('Email', '').strip()
+                            if not email:
+                                continue
+
+                            email_lower = email.lower()
+                            iiq_user_id = iiq_user.get('UserId', '')
+
+                            iiq_data = {
+                                'user_id': iiq_user_id,
+                                'email': email,
+                                'name': iiq_user.get('Name', ''),
+                                'first_name': iiq_user.get('FirstName', ''),
+                                'last_name': iiq_user.get('LastName', ''),
+                                'location': iiq_user.get('Location', ''),
+                                'role': iiq_user.get('Role', ''),
+                                'student_id': iiq_user.get('SchoolIdNumber', ''),
+                                'grade': iiq_user.get('Grade', ''),
+                                'username': iiq_user.get('UserName', ''),
+                                'is_active': iiq_user.get('IsActive', True)
+                            }
+
+                            if email_lower in google_users_by_email:
+                                # MATCHED: Merge user
+                                google_data = google_users_by_email[email_lower]
+                                merged_emails.add(email_lower)
+                                users_merged += 1
+
+                                user = session.query(User).filter(
+                                    User.user_id == google_data['user_id']
+                                ).first()
+
+                                if user:
+                                    user.google_user_id = google_data['user_id']
+                                    user.iiq_user_id = iiq_data['user_id']
+                                    user.iiq_location = iiq_data['location']
+                                    user.iiq_role_name = iiq_data['role']
+                                    user.is_active_iiq = iiq_data['is_active']
+                                    user.username = iiq_data['username']
+
+                                    if iiq_data['student_id']:
+                                        user.student_id = iiq_data['student_id']
+                                    if iiq_data['grade']:
+                                        user.student_grade = iiq_data['grade']
+
+                                    user.data_source = 'merged'
+                                    user.is_merged = True
+                                    user.iiq_synced_at = datetime.now()
+                                    user.google_synced_at = datetime.now()
+                                    user.updated_at = datetime.now()
+                            else:
+                                # IIQ-ONLY: Create new user from IIQ data
+                                users_processed += 1
+                                users_iiq_only += 1
+
+                                existing = session.query(User).filter(
+                                    User.email == email_lower
+                                ).first()
+
+                                if not existing:
+                                    new_user = User(
+                                        user_id=None,
+                                        email=iiq_data['email'],
+                                        full_name=iiq_data['name'],
+                                        first_name=iiq_data['first_name'],
+                                        last_name=iiq_data['last_name'],
+                                        iiq_user_id=iiq_data['user_id'],
+                                        iiq_location=iiq_data['location'],
+                                        iiq_role_name=iiq_data['role'],
+                                        is_active_iiq=iiq_data['is_active'],
+                                        username=iiq_data['username'],
+                                        student_id=iiq_data['student_id'],
+                                        student_grade=iiq_data['grade'],
+                                        data_source='iiq',
+                                        is_merged=False,
+                                        iiq_synced_at=datetime.now(),
+                                        created_at=datetime.now(),
+                                        updated_at=datetime.now()
+                                    )
+                                    session.add(new_user)
+
+                            users_processed += 1
+
+                        # Commit after each page to free memory
+                        session.commit()
+                        gc.collect()  # Force garbage collection to release memory immediately
+                        print(f"    Committed page {page_num}. Memory released.")
+
+                        if len(iiq_page) < page_size:
+                            print(f"    Last page detected (got {len(iiq_page)} users < {page_size}). Done.")
+                            break
+
+                        page_num += 1
+                    except Exception as e:
+                        print(f"  Warning: Error fetching IIQ users page {page_num}: {e}")
+                        break
+
+                print(f"\n  Total IIQ users processed: {total_iiq_fetched}")
+                print(f"  Users merged (Google + IIQ): {users_merged}")
+                print(f"  IIQ-only users added: {users_iiq_only}")
+
+                # Process remaining Google-only users
+                print("\nSTEP 3: Marking Google-only users...")
+                google_only_count = 0
                 for email_lower, google_data in google_users_by_email.items():
-                    users_processed += 1
-
-                    if email_lower in iiq_users_by_email:
-                        # MATCHED: Merge user
-                        iiq_data = iiq_users_by_email[email_lower]
-                        merged_emails.add(email_lower)
-                        users_merged += 1
-
-                        user = session.query(User).filter(
-                            User.user_id == google_data['user_id']
-                        ).first()
-
-                        if user:
-                            # Update with merged data (IIQ authoritative for location/role)
-                            user.google_user_id = google_data['user_id']
-                            user.iiq_user_id = iiq_data['user_id']
-                            user.iiq_location = iiq_data['location']
-                            user.iiq_role_name = iiq_data['role']
-                            user.is_active_iiq = iiq_data['is_active']
-                            user.username = iiq_data['username']
-
-                            # Use IIQ student data if available, otherwise Google
-                            if iiq_data['student_id']:
-                                user.student_id = iiq_data['student_id']
-                            if iiq_data['grade']:
-                                user.student_grade = iiq_data['grade']
-
-                            user.data_source = 'merged'
-                            user.is_merged = True
-                            user.iiq_synced_at = datetime.now()
-                            user.google_synced_at = datetime.now()
-                            user.updated_at = datetime.now()
-                    else:
-                        # GOOGLE-ONLY: Mark as not merged, set data source
+                    if email_lower not in merged_emails:
                         user = session.query(User).filter(
                             User.user_id == google_data['user_id']
                         ).first()
@@ -726,53 +759,17 @@ class SimpleSyncService:
                             user.is_merged = False
                             user.google_synced_at = datetime.now()
                             user.updated_at = datetime.now()
+                            google_only_count += 1
 
-                        users_google_only += 1
-
-                    if users_processed % 100 == 0:
+                    if google_only_count % 100 == 0:
                         session.commit()
-                        print(f"  Processed {users_processed} users...")
 
                 session.commit()
+                users_google_only = google_only_count
+                print(f"  Marked {google_only_count} Google-only users")
 
-                # STEP 5: Add IIQ-only users (not found in Google)
-                print("\nSTEP 4: Adding IIQ-only users...")
-                for email_lower, iiq_data in iiq_users_by_email.items():
-                    if email_lower not in merged_emails and email_lower not in google_users_by_email:
-                        users_processed += 1
-                        users_iiq_only += 1
-
-                        # Create new user from IIQ data only
-                        new_user = User(
-                            user_id=None,  # IIQ-only user, no Google ID
-                            email=iiq_data['email'],
-                            full_name=iiq_data['name'],
-                            first_name=iiq_data['first_name'],
-                            last_name=iiq_data['last_name'],
-                            iiq_user_id=iiq_data['user_id'],
-                            iiq_location=iiq_data['location'],
-                            iiq_role_name=iiq_data['role'],
-                            is_active_iiq=iiq_data['is_active'],
-                            username=iiq_data['username'],
-                            student_id=iiq_data['student_id'],
-                            student_grade=iiq_data['grade'],
-                            data_source='iiq',
-                            is_merged=False,
-                            iiq_synced_at=datetime.now(),
-                            created_at=datetime.now(),
-                            updated_at=datetime.now()
-                        )
-                        session.add(new_user)
-
-                        if users_iiq_only % 100 == 0:
-                            session.commit()
-                            print(f"  Added {users_iiq_only} IIQ-only users...")
-
-                session.commit()
-                print(f"  Added {users_iiq_only} IIQ-only users to database")
-
-            # STEP 6: Fetch fee balances for all users
-            print("\nSTEP 5: Fetching fee balances from IIQ Fee Tracker...")
+            # STEP 4: Fetch fee balances for all users
+            print("\nSTEP 4: Fetching fee balances from IIQ Fee Tracker...")
             users_with_fees = []
 
             with db.get_session() as session:
@@ -805,12 +802,13 @@ class SimpleSyncService:
                         print(f"  Processed fees for {idx + 1} users...")
 
                 session.commit()
+                gc.collect()  # Force garbage collection after fee processing
                 print(f"  Fetched fees for {fees_fetched} users with outstanding balances")
 
-            # STEP 7: Summary
+            # STEP 5: Summary
             duration = int((datetime.now() - start_time).total_seconds())
 
-            print(f"\n✓ Unified user sync complete:")
+            print(f"\n✓ Unified user sync complete (stream-processed, memory-efficient):")
             print(f"  Total users processed: {users_processed}")
             print(f"  Users merged (Google + IIQ): {users_merged}")
             print(f"  Google-only users: {users_google_only}")
