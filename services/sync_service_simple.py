@@ -651,14 +651,21 @@ class SimpleSyncService:
                             email_lower = email.lower()
                             iiq_user_id = iiq_user.get('UserId', '')
 
+                            # Extract location and role names from nested objects
+                            location_obj = iiq_user.get('Location', {})
+                            location_name = location_obj.get('Name', '') if isinstance(location_obj, dict) else str(location_obj)
+
+                            role_obj = iiq_user.get('Role', {})
+                            role_name = role_obj.get('Name', '') if isinstance(role_obj, dict) else str(role_obj)
+
                             iiq_data = {
                                 'user_id': iiq_user_id,
                                 'email': email,
                                 'name': iiq_user.get('Name', ''),
                                 'first_name': iiq_user.get('FirstName', ''),
                                 'last_name': iiq_user.get('LastName', ''),
-                                'location': iiq_user.get('Location', ''),
-                                'role': iiq_user.get('Role', ''),
+                                'location': location_name,
+                                'role': role_name,
                                 'student_id': iiq_user.get('SchoolIdNumber', ''),
                                 'grade': iiq_user.get('Grade', ''),
                                 'username': iiq_user.get('UserName', ''),
